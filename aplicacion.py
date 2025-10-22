@@ -17,8 +17,7 @@ import joblib
 from itertools import combinations
 import datetime as dt
 from sqlalchemy import create_engine
-from datetime import datetime
-from datetime import datetime, time, timedelta
+
 # --- Importaciones de Selenium ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -279,10 +278,10 @@ def obtener_horarios_sorteo_diarios(id_loteria):
         if cursor: cursor.close()
         if conn_a_usar and conn_a_usar.is_connected(): conn_a_usar.close()
 
-def obtener_frecuencia_animal_loteria_hora(animalito_id: int, id_loteria: int, hora_sorteo_time: time, n_sorteos: int = 100) -> float:
+def obtener_frecuencia_animal_loteria_hora(animalito_id, id_loteria, hora_sorteo_time, n_sorteos=100):
     """
     Calcula la frecuencia con la que ha salido un animalito específico en 
-    una lotería y hora específica en los últimos 90 días.
+    una lotería y hora específica en los últimos N sorteos (o días).
     Esta función es CRÍTICA para la discriminación de lotería.
     """
     conn_a_usar = obtener_conexion_db()
@@ -290,37 +289,38 @@ def obtener_frecuencia_animal_loteria_hora(animalito_id: int, id_loteria: int, h
 
     frecuencia = 0.0
     
-    # Asegurarse que el animalito_id tiene dos dígitos para la consulta (e.g., '05')
-    animalito_str = str(animalito_id).zfill(2)
-    hora_str = hora_sorteo_time.strftime('%H:%M:%S')
-
-    # Consulta unificada para obtener el total de sorteos y el conteo del animalito
-    query = """
-    SELECT 
-        COUNT(s.id_sorteo) AS total_sorteos,
-        SUM(CASE WHEN a.numero_asociado = %s THEN 1 ELSE 0 END) AS victorias
-    FROM sorteos s
-    INNER JOIN animalitos a ON s.id_animalito_ganador = a.id_animalito
-    WHERE s.id_loteria = %s 
-      AND s.hora = %s
-      AND s.fecha >= DATE_SUB(CURDATE(), INTERVAL 90 DAY); 
-    """
-    
+    # ⚠️ IMPORTANTE: IMPLEMENTAR LA LÓGICA DE CONSULTA SQL A LA DB AQUÍ ⚠️
+    # La consulta debe contar: (Victorias del animalito en esta lotería y hora) / (Total de sorteos en esta lotería y hora)
     try:
         with conn_a_usar.cursor(dictionary=True) as cursor:
-            # Parámetros: [animalito_str], [id_loteria], [hora_str]
-            cursor.execute(query, (animalito_str, id_loteria, hora_str))
-            resultado = cursor.fetchone()
+            # Consulta de Ejemplo (AJUSTAR A TU ESQUEMA DB):
+            # Obtener el total de veces que ha salido el animalito en esa lotería/hora en los últimos 90 días
+            query_victorias = """
+            SELECT COUNT(s.id_sorteo) AS victorias
+            FROM sorteos s
+            INNER JOIN animalitos a ON s.id_animalito_ganador = a.id_animalito
+            WHERE s.id_loteria = %s AND s.hora = %s AND a.numero_asociado = %s
+            AND s.fecha >= DATE_SUB(CURDATE(), INTERVAL 90 DAY); 
+            """
+            # Obtener el total de sorteos de esa lotería/hora en los últimos 90 días
+            query_total_sorteos = """
+            SELECT COUNT(id_sorteo) AS total
+            FROM sorteos
+            WHERE id_loteria = %s AND hora = %s
+            AND fecha >= DATE_SUB(CURDATE(), INTERVAL 90 DAY);
+            """
             
-            victorias = resultado['victorias'] if resultado and resultado['victorias'] is not None else 0
-            total_sorteos = resultado['total_sorteos'] if resultado and resultado['total_sorteos'] is not None else 0
+            cursor.execute(query_victorias, (id_loteria, hora_sorteo_time.strftime('%H:%M:%S'), str(animalito_id).zfill(2)))
+            victorias = cursor.fetchone()['victorias']
+            
+            cursor.execute(query_total_sorteos, (id_loteria, hora_sorteo_time.strftime('%H:%M:%S')))
+            total_sorteos = cursor.fetchone()['total']
             
             if total_sorteos > 0:
                 frecuencia = victorias / total_sorteos
                 
     except Exception as e:
-        # print(f"❌ Error al calcular frecuencia_animal_loteria_hora: {e}")
-        frecuencia = 0.0
+        print(f"❌ Error al calcular frecuencia_animal_loteria_hora: {e}")
     finally:
         if conn_a_usar and conn_a_usar.is_connected(): conn_a_usar.close()
         
@@ -815,14 +815,13 @@ def generar_features_avanzadas(df, target_col='id_target'):
     # 7. Placeholder para features de runtime (necesarias para la coherencia en la predicción)
     
     # 🚀 REFUERZO CLAVE 2: REPETICIÓN HISTÓRICA ESPECÍFICA L-H (placeholder)
+    # Esta es la feature MÁS CRÍTICA para la discriminación. Se calculará en runtime.
     df['repeticion_historica_L1E_L_H'] = 0.0 # 👈 NUEVO PLACEHOLDER
-    
-    # 🚨 NUEVO PLACEHOLDER PARA FRECUENCIA DE ANIMALITO POR LOTERÍA/HORA 🚨
-    df['frecuencia_animal_loteria_hora'] = 0.0 # 👈 PLACEHOLDER CRÍTICO
     
     # Placeholders existentes (Mantenidos)
     df['dias_sin_salir_global'] = 0.0
     df['frecuencia_repeticion_lag1'] = 0.0
+    df['frecuencia_animal_loteria_hora'] = 0.0 
     df['es_lag_especifico_1_bool'] = 0.0 
     df['es_lag_especifico_2_bool'] = 0.0 
     df['frecuencia_repeticion_terminacion'] = 0.0 
@@ -830,6 +829,7 @@ def generar_features_avanzadas(df, target_col='id_target'):
     df['frecuencia_repeticion_local'] = 0.0 
     df['frecuencia_influencia_global'] = 0.0 
     df['fidelidad_score'] = 0.0 
+    # Interacciones L1E vs. Tiempo ya calculadas en la sección 2, pero inicializadas como 0.0 en el código original, las mantenemos como están.
     
     # 8. LIMPIEZA FINAL 
     df = df.drop(columns=['sorteo_key', 'hora_sorteo_str', 'numero_animalito_str',
@@ -853,7 +853,7 @@ def generar_features_avanzadas(df, target_col='id_target'):
 def entrenar_modelo_loterias():
     """
     Carga datos históricos y entrena un modelo XGBoost SEPARADO para cada lotería.
-    ACTUALIZADO: Incluye la característica 'frecuencia_animal_loteria_hora'.
+    ACTUALIZADO: Incluye TODAS las nuevas features de discriminación por lotería.
     """
     conn_global = obtener_conexion_db() 
     if not conn_global:
@@ -871,15 +871,15 @@ def entrenar_modelo_loterias():
     """
     
     try:
-        # Lógica de carga de datos (mantenida)
+        # Uso de un DataFrame de ejemplo si la conexión falla (Solo para debug/test)
         if conn_global:
              with conn_global.cursor(dictionary=True) as cursor:
-                 cursor.execute(query)
-                 datos = cursor.fetchall()
+                cursor.execute(query)
+                datos = cursor.fetchall()
              df_full = pd.DataFrame(datos)
         else:
+             # Generación de datos simulados para prueba
              print("⚠️ Usando datos simulados para entrenamiento.")
-             # ... Lógica de datos simulados (mantenida) ...
              data = {
                  'fecha_sorteo': pd.to_datetime(['2023-01-01'] * 300),
                  'hora_sorteo': [f'{h:02d}:00:00' for h in range(10, 20)] * 30,
@@ -898,7 +898,7 @@ def entrenar_modelo_loterias():
         
         loterias_unicas = df_full['id_loteria'].unique()
         
-        # 🚨 LISTA DE FEATURES CRÍTICAS (INCLUYENDO LA NUEVA FRECUENCIA) 🚨
+        # 🚨 LISTA DE FEATURES CRÍTICAS (AÑADIENDO REFUERZOS DE DISCRIMINACIÓN) 🚨
         features_a_usar = [
             'lag_global_1', 'lag_global_2', 'lag_global_3', 'lag_global_4', 'lag_global_5', 
             'lag_especifico_1', 'lag_especifico_2', 'lag_especifico_3', 
@@ -917,14 +917,14 @@ def entrenar_modelo_loterias():
             'interaccion_L1G_Loteria', 
             'interaccion_L1E_Loteria',
             # 🚀 REFUERZO CLAVE 2: REPETICIÓN HISTÓRICA ESPECÍFICA L-H (placeholder de runtime)
-            'repeticion_historica_L1E_L_H', 
+            'repeticion_historica_L1E_L_H', # 👈 NUEVA FEATURE
             # 🆕 NUEVAS INTERACCIONES CRÍTICAS LAG ESPECÍFICO 1 vs. TIEMPO 
             'interaccion_L1E_Hsin',
             'interaccion_L1E_Hcos',
             'interaccion_L1E_DSsin',
             'interaccion_L1E_DScos',
             # 👈 LAS NUEVAS FEATURES DE DISCRIMINACIÓN (Estrategia 1 y 2)
-            'frecuencia_animal_loteria_hora', # 👈 NUEVA FEATURE CRÍTICA INCLUIDA
+            'frecuencia_animal_loteria_hora', 
             'es_lag_especifico_1_bool',
             'es_lag_especifico_2_bool',
             # 🆕 ESTRATEGIA 4 & 5: NUEVAS FEATURES (Terminación) 
@@ -934,6 +934,7 @@ def entrenar_modelo_loterias():
             'frecuencia_repeticion_local', 
             'frecuencia_influencia_global', 
             'fidelidad_score'
+
         ]
         
         # Identificar todas las columnas OHE generadas
@@ -941,7 +942,6 @@ def entrenar_modelo_loterias():
         
         print(f"\n--- INICIANDO ENTRENAMIENTO SEPARADO PARA {len(loterias_unicas)} LOTERÍAS ---")
         
-        # Lógica de entrenamiento por lotería (mantenida)
         for id_loteria in loterias_unicas:
             df_loteria = df_full[df_full['id_loteria'] == id_loteria].copy()
             
@@ -960,11 +960,12 @@ def entrenar_modelo_loterias():
                 print(f"❌ Error: El conjunto de datos para la Lotería {id_loteria} está vacío después de la limpieza.")
                 continue
 
+            # Usar todas las filas para el entrenamiento si el dataset es pequeño, o un simple split si es grande
             X_train = X; Y_train = Y # Entrenar con todo
             
             nombre_archivo = f'modelo_loterias_xgb_{id_loteria}.pkl'
             
-            # Configuración del modelo XGBoost (mantenida)
+            # Configuración del modelo XGBoost
             modelo = XGBClassifier(
                 n_estimators=1000, learning_rate=0.02, max_depth=7, subsample=0.7, 
                 colsample_bytree=0.7, eval_metric='mlogloss', random_state=42, tree_method='hist' 
@@ -1117,16 +1118,17 @@ def obtener_ultimos_resultados(id_loteria_prediccion, hora_sorteo_str):
 def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
     """
     Carga el modelo ENTRENADO ESPECÍFICAMENTE para id_loteria y realiza la predicción.
-    ACTUALIZADO: Incluye la característica CRÍTICA 'frecuencia_animal_loteria_hora' en runtime.
+    ACTUALIZADO: Incluye TODAS las nuevas features, incluyendo la CRÍTICA
+    repeticion_historica_L1E_L_H.
     """
     import joblib 
     import pandas as pd
     import numpy as np
     from datetime import datetime, timedelta, time
     
-    # 1. Cargar Modelo
     nombre_archivo_modelo = f'modelo_loterias_xgb_{id_loteria}.pkl'
     try:
+        # Se asume que el archivo del modelo está en el directorio de ejecución.
         modelo = joblib.load(nombre_archivo_modelo)
         print(f"✅ Modelo {nombre_archivo_modelo} cargado correctamente.")
     except (FileNotFoundError, Exception) as e:
@@ -1223,6 +1225,7 @@ def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
             lag_especifico_1, id_loteria, hora_time, n_sorteos=50
         )
     except Exception as e:
+        print(f"❌ Advertencia: Error en obtener_repeticion_L1E_L_H: {e}. Usando 0.0.")
         repeticion_historica_L1E_L_H = 0.0
 
     # 4. BUCLE CRÍTICO: Itera sobre todos los posibles animalitos (0 a 36)
@@ -1262,7 +1265,6 @@ def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
             dias_sin_salir_global = 999 
 
         # 🚨 ESTRATEGIA 1: FRECUENCIA ESPECÍFICA POR LOTERÍA-HORA (CRÍTICA) 🚨
-        # **LA IMPLEMENTACIÓN CRÍTICA PARA LA PRECISION DE LOTERÍA**
         frecuencia_animal_loteria_hora = obtener_frecuencia_animal_loteria_hora(
             animalito_id, id_loteria, hora_time, n_sorteos=100
         )
@@ -1298,14 +1300,14 @@ def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
             'interaccion_L1G_Loteria': interaccion_L1G_Loteria, 
             'interaccion_L1E_Loteria': interaccion_L1E_Loteria,
             # 🚀 REFUERZO CLAVE 2: REPETICIÓN HISTÓRICA ESPECÍFICA L-H 🚀
-            'repeticion_historica_L1E_L_H': repeticion_historica_L1E_L_H, 
+            'repeticion_historica_L1E_L_H': repeticion_historica_L1E_L_H, # ¡NUEVA!
             # 🆕 NUEVAS INTERACCIONES CRÍTICAS LAG ESPECÍFICO 1 vs. TIEMPO 
             'interaccion_L1E_Hsin': interaccion_L1E_Hsin,
             'interaccion_L1E_Hcos': interaccion_L1E_Hcos,
             'interaccion_L1E_DSsin': interaccion_L1E_DSsin,
             'interaccion_L1E_DScos': interaccion_L1E_DScos,
             # 👈 NUEVAS FEATURES DE DISCRIMINACIÓN (Estrategia 1 y 2)
-            'frecuencia_animal_loteria_hora': frecuencia_animal_loteria_hora, # ¡NUEVA CRÍTICA INCLUIDA!
+            'frecuencia_animal_loteria_hora': frecuencia_animal_loteria_hora, 
             'es_lag_especifico_1_bool': es_lag_especifico_1_bool,
             'es_lag_especifico_2_bool': es_lag_especifico_2_bool,
             # 🆕 ESTRATEGIA 4 & 5: NUEVAS FEATURES DE TERMINACIÓN (CRÍTICO) 
@@ -1324,7 +1326,7 @@ def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
             'frecuencia_repeticion_local', 'frecuencia_influencia_global', 'fidelidad_score',
             'frecuencia_repeticion_terminacion', 'antiguedad_terminacion_lag1',
             # Asegurar que la nueva feature sea numérica
-            'repeticion_historica_L1E_L_H', 'frecuencia_animal_loteria_hora'
+            'repeticion_historica_L1E_L_H'
         ]
         for col in cols_a_convertir:
             X_pred_base[col] = pd.to_numeric(X_pred_base[col], errors='coerce').fillna(0.0).astype(float)
@@ -1408,7 +1410,8 @@ from itertools import combinations
 def predecir_tripletas_diarias(id_loteria, top_n=5):
     """
     Predice los animalitos con mayor probabilidad acumulada diaria.
-    CORREGIDO: Soluciona el error 'descriptor time' for 'datetime.datetime' objects doesn't apply to a 'int' object.
+    ACTUALIZADO: Incluye las features de Interacción Lag Específico 1 vs. Tiempo 
+                 Y las Interacciones Lotería-Lag.
     """
     nombre_archivo_modelo = f'modelo_loterias_xgb_{id_loteria}.pkl' 
     try:
@@ -1419,6 +1422,7 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
         return None
 
     # 2. OBTENER HORARIOS Y LAGS
+    # Se asume que las funciones auxiliares están definidas en tu entorno.
     try:
         horarios_del_dia = obtener_horarios_sorteo_diarios(id_loteria)
     except Exception as e:
@@ -1431,6 +1435,7 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
     
     hora_referencia = horarios_del_dia[0] 
     try:
+        # Se asume que obtener_ultimos_resultados está definido
         (
             lag_global_1, lag_global_2, lag_global_3, lag_global_4, lag_global_5,
             lag_especifico_1, lag_especifico_2, lag_especifico_3, lag_especifico_4, 
@@ -1440,6 +1445,7 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
             frecuencia_especifica_animal_30,
             es_lag_cruzado, lag_animal_cruzado, lag_terminacion_cruzada,
             dummy_final,
+            # Variables recibidas de obtener_ultimos_resultados
             id_loteria_num,
             interaccion_L1G_Loteria,
             interaccion_L1E_Loteria 
@@ -1448,30 +1454,16 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
         print(f"❌ Error al obtener los últimos resultados (Lags/Frecuencia) para tripletas: {e}")
         return None
 
-    # ... (Pre-cálculo de Frecuencias y Antigüedad - SE APLICA ROBUSTEZ DE TIPO AQUI) ...
+    # ... (Pre-cálculo de Frecuencias y Antigüedad - Mantenido) ...
     try:
-        # ROBUSTEZ TIPO 1: Asegura que el resultado sea float o 0.0
-        frecuencia_repeticion_lag1_raw = obtener_frecuencia_repeticion(id_loteria, n_sorteos=150)
-        try: frecuencia_repeticion_lag1 = float(frecuencia_repeticion_lag1_raw)
-        except (ValueError, TypeError): frecuencia_repeticion_lag1 = 0.0
-
+        frecuencia_repeticion_lag1 = obtener_frecuencia_repeticion(id_loteria, n_sorteos=150)
         last_hit_lag_1_dt = obtener_antiguedad_lag_especifico_1(lag_especifico_1, id_loteria)
-        
-        # ROBUSTEZ TIPO 1: Asegura que el resultado sea float o 0.0
-        frecuencia_repeticion_terminacion_raw = obtener_frecuencia_repeticion_terminacion(
+        frecuencia_repeticion_terminacion = obtener_frecuencia_repeticion_terminacion(
             lag_terminacion_1, id_loteria, n_sorteos=150
         )
-        try: frecuencia_repeticion_terminacion = float(frecuencia_repeticion_terminacion_raw)
-        except (ValueError, TypeError): frecuencia_repeticion_terminacion = 0.0
-
         last_hit_terminacion_dt = obtener_antiguedad_lag_terminacion(lag_terminacion_1, id_loteria)
         hora_ref_dt_time = datetime.strptime(hora_referencia, '%H:%M:%S').time()
-        
-        # ROBUSTEZ TIPO 1: Asegura que el resultado sea float o 0.0
-        frecuencia_repeticion_local_lag1_raw = obtener_frecuencia_repeticion_local(id_loteria, hora_ref_dt_time)
-        try: frecuencia_repeticion_local_lag1 = float(frecuencia_repeticion_local_lag1_raw)
-        except (ValueError, TypeError): frecuencia_repeticion_local_lag1 = 0.0
-        
+        frecuencia_repeticion_local_lag1 = obtener_frecuencia_repeticion_local(id_loteria, hora_ref_dt_time)
         fidelidad_score_lag1 = calcular_fidelidad_score(lag_especifico_1, id_loteria, hora_ref_dt_time)
         historial_hits = obtener_ultimo_hit(id_loteria)
     except Exception as e:
@@ -1488,15 +1480,13 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
     ahora_ref = datetime.now()
     datetime_actual_ref = datetime.combine(ahora_ref.date(), time(0, 0, 0))
     
-    # 💥 CORRECCIÓN CRÍTICA 2: Verificar el tipo antes de usar .total_seconds()
     dias_antiguedad_lag_1_target = 999 
-    if isinstance(last_hit_lag_1_dt, datetime):
+    if last_hit_lag_1_dt:
         time_diff_lag_1 = datetime_actual_ref - last_hit_lag_1_dt
         dias_antiguedad_lag_1_target = max(0.0, time_diff_lag_1.total_seconds() / (24 * 3600))
     
-    # 💥 CORRECCIÓN CRÍTICA 3: Verificar el tipo antes de usar .total_seconds()
     dias_antiguedad_terminacion_lag1 = 999 
-    if isinstance(last_hit_terminacion_dt, datetime):
+    if last_hit_terminacion_dt:
         time_diff_term = datetime_actual_ref - last_hit_terminacion_dt
         dias_antiguedad_terminacion_lag1 = max(0.0, time_diff_term.total_seconds() / (24 * 3600))
 
@@ -1505,7 +1495,6 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
     for hora_sorteo_str in horarios_del_dia:
         
         ahora = datetime.now()
-        # Se mantiene la robustez de conversión de hora_sorteo_str
         try: hora_dt = pd.to_datetime(hora_sorteo_str).to_pydatetime()
         except ValueError: hora_dt = datetime.strptime(hora_sorteo_str, '%H:%M:%S') 
         
@@ -1540,37 +1529,20 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
         
         for animalito_id in range(37):
             
-            # ROBUSTEZ: Manejo de días sin salir con verificación de tipo (para evitar errores con None)
+            # ... (Cálculo de dias_sin_salir, frecuencias, etc. - Mantenido) ...
             last_hit_dt = historial_hits.get(animalito_id)
-            dias_sin_salir = 999 
-            if isinstance(last_hit_dt, datetime):
-                time_diff = datetime_prediccion - last_hit_dt
-                dias_sin_salir = time_diff.total_seconds() / (24 * 3600) 
+            dias_sin_salir = (datetime_prediccion - last_hit_dt).total_seconds() / (24 * 3600) if last_hit_dt else 999 
             dias_sin_salir = max(0.0, dias_sin_salir)
-            
             frecuencia_reciente_global = animales_recientes.count(animalito_id)
-            
             last_cross_hit_dt = last_cross_hits.get(animalito_id)
-            dias_sin_salir_cruzado = 999
-            if isinstance(last_cross_hit_dt, datetime):
-                time_diff_cruzado = datetime_prediccion - last_cross_hit_dt
-                dias_sin_salir_cruzado = time_diff_cruzado.total_seconds() / (24 * 3600)
+            dias_sin_salir_cruzado = (datetime_prediccion - last_cross_hit_dt).total_seconds() / (24 * 3600) if last_cross_hit_dt else 999
             dias_sin_salir_cruzado = max(0.0, dias_sin_salir_cruzado)
-            
             last_hit_global_dt = last_global_hits.get(animalito_id)
-            dias_sin_salir_global = 999 
-            if isinstance(last_hit_global_dt, datetime):
-                time_diff_global = datetime_prediccion - last_hit_global_dt
-                dias_sin_salir_global = time_diff_global.total_seconds() / (24 * 3600)
+            dias_sin_salir_global = (datetime_prediccion - last_hit_global_dt).total_seconds() / (24 * 3600) if last_hit_global_dt else 999 
             dias_sin_salir_global = max(0.0, dias_sin_salir_global)
-            
-            # ROBUSTEZ TIPO 1: Asegura que el resultado sea float o 0.0
-            frecuencia_animal_loteria_hora_raw = obtener_frecuencia_animal_loteria_hora(
+            frecuencia_animal_loteria_hora = obtener_frecuencia_animal_loteria_hora(
                 animalito_id, id_loteria, hora_time, n_sorteos=100
             )
-            try: frecuencia_animal_loteria_hora = float(frecuencia_animal_loteria_hora_raw)
-            except (ValueError, TypeError): frecuencia_animal_loteria_hora = 0.0
-
             es_lag_especifico_1_bool = 1 if animalito_id == lag_especifico_1 else 0
             es_lag_especifico_2_bool = 1 if animalito_id == lag_especifico_2 else 0
 
@@ -1597,12 +1569,16 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
                 'dias_sin_salir_global': dias_sin_salir_global, 
                 'frecuencia_repeticion_lag1': frecuencia_repeticion_lag1,
                 'id_loteria_num': id_loteria_num,
+                # === IMPLEMENTACIÓN SOLICITADA: INCLUSIÓN DE INTERACCIONES LOTERÍA-LAG ===
                 'interaccion_L1G_Loteria': interaccion_L1G_Loteria,
                 'interaccion_L1E_Loteria': interaccion_L1E_Loteria,
+                # =======================================================================
+                # 🆕 INTEGRACIÓN CLAVE 2: INCLUSIÓN DE LAS NUEVAS INTERACCIONES
                 'interaccion_L1E_Hsin': interaccion_L1E_Hsin, 
                 'interaccion_L1E_Hcos': interaccion_L1E_Hcos,
                 'interaccion_L1E_DSsin': interaccion_L1E_DSsin,
                 'interaccion_L1E_DScos': interaccion_L1E_DScos,
+                # 🚀 NUEVAS ESTRATEGIAS (4, 5 y Avanzadas) IMPLEMENTADAS 🚀
                 'frecuencia_animal_loteria_hora': frecuencia_animal_loteria_hora,
                 'es_lag_especifico_1_bool': es_lag_especifico_1_bool,
                 'es_lag_especifico_2_bool': es_lag_especifico_2_bool,
@@ -1735,10 +1711,14 @@ def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, 
     """
     Consolida las probabilidades de un animalito específico a través de múltiples 
     loterías para generar una "Tripleta Global".
+    ACTUALIZADO: Incluye las features de Interacción Lag Específico 1 vs. Tiempo
+                 Y las Interacciones Lotería-Lag.
     """
     
     global_total_probabilities = {i: 0.0 for i in range(37)}
     conteo_predicciones = 0
+    
+    # 2. Iterar sobre cada lotería y obtener sus probabilidades (MANTENIDO)
     
     # Pre-parseo de la hora (MANTENIDO)
     try: hora_dt = pd.to_datetime(hora_prediccion_str).to_pydatetime()
@@ -1786,52 +1766,35 @@ def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, 
             print(f"❌ Error al obtener los lags para Lotería {id_loteria}: {e}. Saltando.")
             continue
         
-        # 🆕 INTEGRACIÓN CLAVE 1: CÁLCULO DE LAS INTERACCIONES LAG 1 VS TIEMPO (MANTENIDO)
+        # 🆕 INTEGRACIÓN CLAVE 1: CÁLCULO DE LAS INTERACCIONES LAG 1 VS TIEMPO
         interaccion_L1E_Hsin = lag_especifico_1 * hora_sin
         interaccion_L1E_Hcos = lag_especifico_1 * hora_cos
         interaccion_L1E_DSsin = lag_especifico_1 * dia_semana_sin
         interaccion_L1E_DScos = lag_especifico_1 * dia_semana_cos
             
         # 4. Pre-cálculo de Features Constantes para esta hora/lotería (MANTENIDO)
-        # ⚠️ CONVERSIÓN EXPLÍCITA PARA ROBUSTEZ ⚠️
-        try:
-             frecuencia_repeticion_lag1 = float(obtener_frecuencia_repeticion(id_loteria, n_sorteos=150))
-        except (ValueError, TypeError):
-             frecuencia_repeticion_lag1 = 0.0
-             
+        frecuencia_repeticion_lag1 = obtener_frecuencia_repeticion(id_loteria, n_sorteos=150)
         last_hit_lag_1_dt = obtener_antiguedad_lag_especifico_1(lag_especifico_1, id_loteria)
         historial_hits = obtener_ultimo_hit(id_loteria)
         
         # 🚨 ESTRATEGIA 4 y 5 de Terminación (NUEVO) 🚨
-        # ⚠️ CONVERSIÓN EXPLÍCITA PARA ROBUSTEZ ⚠️
-        try:
-            frecuencia_repeticion_terminacion = float(obtener_frecuencia_repeticion_terminacion(
-                lag_terminacion_1, id_loteria, n_sorteos=150
-            ))
-        except (ValueError, TypeError):
-            frecuencia_repeticion_terminacion = 0.0
-            
+        frecuencia_repeticion_terminacion = obtener_frecuencia_repeticion_terminacion(
+            lag_terminacion_1, id_loteria, n_sorteos=150
+        )
         last_hit_terminacion_dt = obtener_antiguedad_lag_terminacion(lag_terminacion_1, id_loteria)
         
         # 🚨 OTRAS ESTRATEGIAS AVANZADAS (NUEVO) 🚨
-        # ⚠️ CONVERSIÓN EXPLÍCITA PARA ROBUSTEZ ⚠️
-        try:
-            frecuencia_repeticion_local_lag1 = float(obtener_frecuencia_repeticion_local(id_loteria, hora_time))
-        except (ValueError, TypeError):
-            frecuencia_repeticion_local_lag1 = 0.0
-
+        frecuencia_repeticion_local_lag1 = obtener_frecuencia_repeticion_local(id_loteria, hora_time)
         fidelidad_score_lag1 = calcular_fidelidad_score(lag_especifico_1, id_loteria, hora_time)
 
         # Antigüedad del lag_especifico_1
         dias_antiguedad_lag_1_target = 999 
-        # ... (Cálculo de días de antigüedad - MANTENIDO) ...
         if last_hit_lag_1_dt:
             time_diff_lag_1 = datetime_prediccion - last_hit_lag_1_dt
             dias_antiguedad_lag_1_target = max(0.0, time_diff_lag_1.total_seconds() / (24 * 3600))
 
         # Antigüedad de la terminación
         dias_antiguedad_terminacion_lag1 = 999 
-        # ... (Cálculo de días de antigüedad - MANTENIDO) ...
         if last_hit_terminacion_dt:
             time_diff_term = datetime_prediccion - last_hit_terminacion_dt
             dias_antiguedad_terminacion_lag1 = max(0.0, time_diff_term.total_seconds() / (24 * 3600))
@@ -1862,29 +1825,20 @@ def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, 
             dias_sin_salir_global = (datetime_prediccion - last_hit_global_dt).total_seconds() / (24 * 3600) if last_hit_global_dt else 999
             dias_sin_salir_global = max(0.0, dias_sin_salir_global)
 
-            # 🚨 PUNTO CRÍTICO DE CORRECCIÓN: CONVERSIÓN A FLOAT APLICADA 🚨
-            frecuencia_animal_loteria_hora_raw = obtener_frecuencia_animal_loteria_hora(
+            frecuencia_animal_loteria_hora = obtener_frecuencia_animal_loteria_hora(
                 animalito_id, id_loteria, hora_time, n_sorteos=100
             )
-            try:
-                # Aseguramos que sea un float para el DataFrame
-                frecuencia_animal_loteria_hora = float(frecuencia_animal_loteria_hora_raw)
-            except (ValueError, TypeError):
-                # Si falla (ej. si la función auxiliar devuelve None o una cadena), usamos 0.0
-                frecuencia_animal_loteria_hora = 0.0 
-            # -------------------------------------------------------------------------
-            
             es_lag_especifico_1_bool = 1 if animalito_id == lag_especifico_1 else 0
             es_lag_especifico_2_bool = 1 if animalito_id == lag_especifico_2 else 0
 
-            # 🚨 CÁLCULO DE INFLUENCIA GLOBAL (Robustez de Tipo: float) 🚨 (MANTENIDO)
+            # 🚨 CÁLCULO DE INFLUENCIA GLOBAL (Robustez de Tipo: float) 🚨
             frecuencia_influencia_global_raw = obtener_frecuencia_influencia_global(lag_especifico_1, datetime_prediccion)
             try:
                 frecuencia_influencia_global = float(frecuencia_influencia_global_raw)
             except (ValueError, TypeError):
                 frecuencia_influencia_global = 0.0
 
-            # --- CREACIÓN Y PREDICCIÓN DE LA FILA (El valor ahora es un float garantizado) ---
+            # --- CREACIÓN Y PREDICCIÓN DE LA FILA ---
             base_data = {
                 'lag_global_1': lag_global_1, 'lag_global_2': lag_global_2, 'lag_global_3': lag_global_3, 
                 'lag_global_4': lag_global_4, 'lag_global_5': lag_global_5, 
@@ -1907,16 +1861,18 @@ def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, 
                 'dias_sin_salir_global': dias_sin_salir_global, 
                 'frecuencia_repeticion_lag1': frecuencia_repeticion_lag1,
                 'id_loteria_num': id_loteria_num,
-                # === INTERACCIONES LOTERÍA-LAG ===
+                # === IMPLEMENTACIÓN SOLICITADA: INCLUSIÓN DE INTERACCIONES LOTERÍA-LAG ===
                 'interaccion_L1G_Loteria': interaccion_L1G_Loteria,
                 'interaccion_L1E_Loteria': interaccion_L1E_Loteria,
-                # === INTERACCIONES LAG 1 VS TIEMPO ===
+                # =======================================================================
+
+                # 🆕 INTEGRACIÓN CLAVE 2: INCLUSIÓN DE LAS NUEVAS INTERACCIONES
                 'interaccion_L1E_Hsin': interaccion_L1E_Hsin, 
                 'interaccion_L1E_Hcos': interaccion_L1E_Hcos,
                 'interaccion_L1E_DSsin': interaccion_L1E_DSsin,
                 'interaccion_L1E_DScos': interaccion_L1E_DScos,
-                # === FEATURES DE DISCRIMINACIÓN (Ahora como float) ===
-                'frecuencia_animal_loteria_hora': frecuencia_animal_loteria_hora, 
+                
+                'frecuencia_animal_loteria_hora': frecuencia_animal_loteria_hora,
                 'es_lag_especifico_1_bool': es_lag_especifico_1_bool,
                 'es_lag_especifico_2_bool': es_lag_especifico_2_bool,
                 'frecuencia_repeticion_terminacion': frecuencia_repeticion_terminacion,
@@ -1936,7 +1892,7 @@ def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, 
             cluster_ohe = pd.DataFrame(0, index=[0], columns=cluster_cols)
             if loteria_hora_cluster_str in cluster_ohe.columns: cluster_ohe[loteria_hora_cluster_str] = 1 
                 
-            X_pred = pd.concat([X_pred_base.reset_index(drop=True), loteria_ohe.reset_index(drop=True), cluster_ohe.reset_index(drop=True)], axis=1).reindex(columns=features_modelo, fill_value=0)
+            X_pred = pd.concat([X_pred_base, loteria_ohe, cluster_ohe], axis=1).reindex(columns=features_modelo, fill_value=0)
             
             # 6. Predecir y ACUMULAR
             probabilidad = modelo.predict_proba(X_pred)[0][animalito_id] 
