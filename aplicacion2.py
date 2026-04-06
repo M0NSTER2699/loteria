@@ -1340,7 +1340,7 @@ def obtener_ultimos_resultados(id_loteria_prediccion, hora_sorteo_str):
 # 🚀 PREDICCIÓN DE ANIMALITOS (MODIFICADA CON ESTRATEGIAS 4 y 5)
 # -------------------------------------------------------------------
 
-def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5):
+def predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=10):
     """
     Carga el modelo y realiza la predicción, calculando todas las features en runtime.
     """
@@ -1830,6 +1830,7 @@ def predecir_tripletas_diarias(id_loteria, top_n=5):
 
 # === FUNCIÓN DE REPORTE DE TRIPLETA COMBINADA (DONDE ESTABA EL ERROR) ===
 
+
 def generar_reporte_tripletas_combinadas(lista_loterias):
     """
     Genera el reporte de las 5 mejores combinaciones de tripletas para cada lotería,
@@ -1889,214 +1890,102 @@ def generar_reporte_tripletas_combinadas(lista_loterias):
 
 # === FUNCIÓN DE TRIPLETA GLOBAL (MANTENIDO) ===
 
+
 def generar_tripleta_consolidada_global(lista_id_loterias, hora_prediccion_str, top_n=5):
     """
-    Consolida las probabilidades ÚNICAMENTE de los animales que logran entrar
-    en el TOP 5 de cada lotería individual, eliminando el ruido estadístico.
-    Forzado a entregar siempre 5 resultados.
+    ESTRATEGIA: FILTRO TRANSVERSAL DEL TOP 5
+    Enfocada en: Repeticiones, Posiciones #1 y el Sweet Spot de la Posición #3.
     """
-    
-    global_total_probabilities = {i: 0.0 for i in range(37)}
-    conteo_predicciones = 0
-    global_penalties = {i: 0 for i in range(37)}                                                                                                    
-    
-    try: hora_dt = datetime.strptime(hora_prediccion_str, '%H:%M:%S')
-    except: hora_dt = pd.to_datetime(hora_prediccion_str).to_pydatetime()
+    predicciones = {}
 
-    ahora = datetime.now()
-    hora_time = hora_dt.time()
-    datetime_actual = datetime.combine(ahora.date(), hora_dt.time())
-    fecha_corte_dt = datetime_actual
-    
-    # 2. Preparar features de tiempo y cíclicas
-    hora_fraccional = hora_dt.hour + hora_dt.minute / 60
-    hora_sin = np.sin(2 * np.pi * hora_fraccional / 24)
-    hora_cos = np.cos(2 * np.pi * hora_fraccional / 24)
-    dia_semana_sin = np.sin(2 * np.pi * ahora.weekday() / 7)
-    dia_semana_cos = np.cos(2 * np.pi * ahora.weekday() / 7)
-    
-    for id_loteria in lista_id_loterias:
-        nombre_archivo_modelo = f'modelo_loterias_xgb_{id_loteria}.pkl'
-        
-        try:
-            modelo = joblib.load(nombre_archivo_modelo)
-            print(f"✅ Modelo {nombre_archivo_modelo} cargado correctamente para Lotería {id_loteria}.")
-            features_modelo = modelo.feature_names_in_.tolist()
-            loteria_cols = [col for col in features_modelo if col.startswith('loteria_')]
-            cluster_cols = [col for col in features_modelo if col.startswith('LH_')]
-        except (FileNotFoundError, Exception) as e:
-            print(f"❌ Error al cargar el modelo: {e}. Saltando Lotería {id_loteria}.")
-            continue
-            
-        try:
-            (
-                lag_global_1, lag_global_2, lag_global_3, lag_global_4, lag_global_5,
-                lag_especifico_1, lag_especifico_2, lag_especifico_3, lag_especifico_4, 
-                lag_especifico_5, lag_especifico_6, lag_semanal_7, frecuencia_30_sorteos, 
-                lag_terminacion_1, lag_terminacion_2, frecuencia_term_50,
-                frecuencia_especifica_animal_30, es_lag_cruzado, lag_animal_cruzado, 
-                lag_terminacion_cruzada, repeticion_historica_L1E_L_H_placeholder, id_loteria_num, 
-                interaccion_L1G_Loteria, interaccion_L1E_Loteria
-            ) = obtener_ultimos_resultados(id_loteria, hora_prediccion_str)
-        except Exception as e:
-            print(f"❌ Error al obtener los lags para Lotería {id_loteria}: {e}. Saltando.")
-            continue
-        
-        lag_especifico_1 = float(lag_especifico_1)
-        historial_hits = obtener_ultimo_hit(id_loteria) 
-        
-        interaccion_L1E_Hsin = lag_especifico_1 * hora_sin
-        interaccion_L1E_Hcos = lag_especifico_1 * hora_cos
-        interaccion_L1E_DSsin = lag_especifico_1 * dia_semana_sin
-        interaccion_L1E_DScos = lag_especifico_1 * dia_semana_cos
-        interaccion_L1G_Hsin = float(lag_global_1) * hora_sin
-        interaccion_L1G_Hcos = float(lag_global_1) * hora_cos
+    # 1. Obtener los TOP 5 de las 3 loterías
+    for id_l in lista_id_loterias:
+        df_res = predecir_animalito_ganador(id_l, hora_prediccion_str, top_n=5)
+        if df_res is not None:
+            predicciones[id_l] = df_res.to_dict('records')
 
-        frecuencia_repeticion_lag1 = obtener_frecuencia_repeticion(id_loteria, n_sorteos=150)
-        last_hit_lag_1_dt = obtener_antiguedad_lag_especifico_1(int(lag_especifico_1), id_loteria)
-        dias_antiguedad_lag_1_target = 999 
-        if last_hit_lag_1_dt:
-            dias_antiguedad_lag_1_target = max(0.0, (datetime_actual - last_hit_lag_1_dt).total_seconds() / (24 * 3600))
-        
-        frecuencia_repeticion_terminacion = obtener_frecuencia_repeticion_terminacion(lag_terminacion_1, id_loteria, n_sorteos=150)
-        last_hit_terminacion_dt = obtener_antiguedad_lag_terminacion(lag_terminacion_1, id_loteria) 
-        dias_antiguedad_terminacion_lag1 = 999 
-        if last_hit_terminacion_dt:
-            dias_antiguedad_terminacion_lag1 = max(0.0, (datetime_actual - last_hit_terminacion_dt).total_seconds() / (24 * 3600))
-            
-        frecuencia_repeticion_local_lag1 = obtener_frecuencia_repeticion_local(id_loteria, hora_time)
-        fidelidad_score_lag1 = calcular_fidelidad_score(int(lag_especifico_1), id_loteria, hora_time)
-        repeticion_historica_L1E_L_H = obtener_repeticion_L1E_L_H(int(lag_especifico_1), id_loteria, hora_time, n_sorteos=50)
+    if not predicciones:
+        return None
 
-        hora_cluster = crear_cluster_hora(hora_dt.time())
-        loteria_hora_cluster_str = f'LH_{id_loteria}_{hora_cluster}'
-        
-        loteria_ohe = pd.DataFrame(0.0, index=[0], columns=loteria_cols)
-        target_loteria_col = f'loteria_{id_loteria}'
-        if target_loteria_col in loteria_ohe.columns: loteria_ohe[target_loteria_col] = 1.0
+    # 2. Análisis Transversal
+    conteo_general = {}
+    for id_l, lista in predicciones.items():
+        for idx, anim in enumerate(lista):
+            num = anim['numero']
+            if num not in conteo_general:
+                conteo_general[num] = {'datos': anim, 'ids': [id_l], 'probs': [anim['probabilidad']], 'pos': [idx+1]}
+            else:
+                conteo_general[num]['ids'].append(id_l)
+                conteo_general[num]['probs'].append(anim['probabilidad'])
+                conteo_general[num]['pos'].append(idx+1)
 
-        cluster_ohe = pd.DataFrame(0.0, index=[0], columns=cluster_cols)
-        if loteria_hora_cluster_str in cluster_ohe.columns: cluster_ohe[loteria_hora_cluster_str] = 1.0 
-        
-        animales_recientes = [lag_global_1, lag_global_2, lag_global_3, lag_global_4, lag_global_5]
-        last_cross_hits = {a: obtener_ultimo_hit_cruzado(a, id_loteria) for a in range(37)}
-        last_global_hits = {a: obtener_ultimo_hit_global(a) for a in range(37)}
-        
-        # Diccionario temporal para guardar las 37 probabilidades de ESTA lotería
-        probs_esta_loteria = {}
-        
-        for animalito_id in range(37): 
-            # (Mantengo todo tu bloque de construcción de features exactamente igual)
-            last_hit_dt = historial_hits.get(animalito_id)
-            dias_sin_salir = 999 if not last_hit_dt else (datetime_actual - last_hit_dt).total_seconds() / (24 * 3600)
-            frecuencia_reciente_global_animal = animales_recientes.count(animalito_id)
-            last_cross_hit_dt = last_cross_hits.get(animalito_id)
-            dias_sin_salir_cruzado = 999 if not last_cross_hit_dt else (datetime_actual - last_cross_hit_dt).total_seconds() / (24 * 3600)
-            last_hit_global_dt = last_global_hits.get(animalito_id)
-            dias_sin_salir_global = 999 if not last_hit_global_dt else max(0.0, (datetime_actual - last_hit_global_dt).total_seconds() / (24 * 3600))
+    seleccion_oro = []
 
-            frecuencia_animal_loteria_hora = obtener_frecuencia_animal_loteria_hora(animalito_id, id_loteria, hora_time, fecha_corte_dt, n_sorteos=100)
-            frecuencia_influencia_global = obtener_frecuencia_influencia_global(int(lag_especifico_1), datetime_actual)
+    # REGLA 1: La Intersección (Repetidos)
+    repetidos = [v for k, v in conteo_general.items() if len(v['ids']) > 1]
+    repetidos.sort(key=lambda x: len(x['ids']), reverse=True)
+    for r in repetidos:
+        if len(seleccion_oro) < 5:
+            d = r['datos']
+            ids_str = " y ".join([f"ID {i}" for i in r['ids']])
+            seleccion_oro.append({
+                'Puesto': len(seleccion_oro) + 1,
+                'Número': d['numero'],
+                'Animalito': d['animalito'],
+                'Motivo de Selección': f"Repetido (Aparece en {ids_str})",
+                'Probabilidad': " / ".join(r['probs'])
+            })
 
-            es_lag_especifico_1_bool = 1.0 if animalito_id == int(lag_especifico_1) else 0.0
-            es_lag_especifico_2_bool = 1.0 if animalito_id == lag_especifico_2 else 0.0
-
-            base_data = {
-                'lag_global_1': float(lag_global_1), 'lag_global_2': float(lag_global_2), 'lag_global_3': float(lag_global_3), 
-                'lag_global_4': float(lag_global_4), 'lag_global_5': float(lag_global_5), 'lag_especifico_1': lag_especifico_1, 
-                'lag_especifico_2': float(lag_especifico_2), 'lag_especifico_3': float(lag_especifico_3), 
-                'lag_especifico_4': float(lag_especifico_4), 'lag_especifico_5': float(lag_especifico_5), 
-                'lag_especifico_6': float(lag_especifico_6), 'lag_semanal_7': float(lag_semanal_7), 
-                'frecuencia_30_sorteos': float(frecuencia_30_sorteos), 'frecuencia_especifica_animal_30': float(frecuencia_especifica_animal_30), 
-                'lag_terminacion_1': float(lag_terminacion_1), 'lag_terminacion_2': float(lag_terminacion_2), 
-                'frecuencia_term_50': float(frecuencia_term_50), 'hora_sin': hora_sin, 'hora_cos': hora_cos, 
-                'dia_semana_sin': dia_semana_sin, 'dia_semana_cos': dia_semana_cos,
-                'dias_sin_salir_exclusivo': dias_sin_salir, 'es_lag_cruzado': float(es_lag_cruzado),
-                'lag_animal_cruzado': float(lag_animal_cruzado), 'lag_terminacion_cruzada': float(lag_terminacion_cruzada),
-                'frecuencia_reciente_global': float(frecuencia_reciente_global_animal), 'dias_sin_salir_otra_loteria': dias_sin_salir_cruzado,
-                'antiguedad_lag_especifico_1_target': dias_antiguedad_lag_1_target, 'dias_sin_salir_global': dias_sin_salir_global, 
-                'frecuencia_repeticion_lag1': float(frecuencia_repeticion_lag1), 'id_loteria_num': float(id_loteria_num),
-                'interaccion_L1G_Loteria': float(interaccion_L1G_Loteria), 'interaccion_L1E_Loteria': float(interaccion_L1E_Loteria),
-                'repeticion_historica_L1E_L_H': float(repeticion_historica_L1E_L_H),
-                'interaccion_L1E_Hsin': interaccion_L1E_Hsin, 'interaccion_L1E_Hcos': interaccion_L1E_Hcos,
-                'interaccion_L1E_DSsin': interaccion_L1E_DSsin, 'interaccion_L1E_DScos': interaccion_L1E_DScos,
-                'interaccion_L1G_Hsin': interaccion_L1G_Hsin, 'interaccion_L1G_Hcos': interaccion_L1G_Hcos,
-                'frecuencia_animal_loteria_hora': float(frecuencia_animal_loteria_hora), 'es_lag_especifico_1_bool': es_lag_especifico_1_bool,
-                'es_lag_especifico_2_bool': es_lag_especifico_2_bool, 'frecuencia_repeticion_terminacion': float(frecuencia_repeticion_terminacion),
-                'antiguedad_terminacion_lag1': dias_antiguedad_terminacion_lag1, 'frecuencia_repeticion_local': float(frecuencia_repeticion_local_lag1), 
-                'frecuencia_influencia_global': float(frecuencia_influencia_global), 'fidelidad_score': float(fidelidad_score_lag1),
-            }
-            
-            X_pred_base = pd.DataFrame([base_data])
-            for col in X_pred_base.columns:
-                X_pred_base[col] = pd.to_numeric(X_pred_base[col], errors='coerce').fillna(0.0).astype(float)
-            X_pred = pd.concat([X_pred_base.reset_index(drop=True), loteria_ohe.reset_index(drop=True), cluster_ohe.reset_index(drop=True)], axis=1).reindex(columns=features_modelo, fill_value=0.0)
-            
-            probabilidad = modelo.predict_proba(X_pred)[0][animalito_id]
-            probs_esta_loteria[animalito_id] = probabilidad # Guardamos localmente
-
-        # --- FILTRO TOP 5 LOCAL ---
-        # Convertimos a DataFrame para ordenar y sacar el TOP 5 de esta lotería
-        df_local = pd.DataFrame(list(probs_esta_loteria.items()), columns=['id', 'prob']).sort_values(by='prob', ascending=False)
-        top_5_local = df_local.head(5)
-        top_5_ids = top_5_local['id'].tolist()
-        
-        # SUMAMOS AL GLOBAL SOLO LOS QUE ENTRARON AL TOP 5 LOCAL
-        for _, fila in top_5_local.iterrows():
-            animal_id = int(fila['id'])
-            global_total_probabilities[animal_id] += fila['prob']
-            conteo_predicciones += 1
-            
-        # Penalización basada en el TOP 5 que acabamos de obtener
-        if len(top_5_ids) >= 4:
-            ids_a_penalizar = [top_5_ids[1], top_5_ids[3]] 
-            for p_id in ids_a_penalizar:
-                global_penalties[p_id] += 1 
-                
-    mapa_clase_a_datos = obtener_mapa_animalitos() 
-    if mapa_clase_a_datos is None: return None
-
-    resultados = []
-    for id_target, total_prob in global_total_probabilities.items():
-        # Solo procesamos animales que sumaron algo (es decir, fueron TOP 5 en alguna lotería)
-        if total_prob > 0:
-            datos_animal = mapa_clase_a_datos.get(id_target)
-            if datos_animal:
-                resultados.append({
-                    'id_clase': id_target, 
-                    'animalito': datos_animal['nombre'], 
-                    'numero': datos_animal['numero'], 
-                    'probabilidad_total_acumulada': total_prob 
+    # REGLA 2: El Triplete de Poder (Los #1 de cada ID)
+    for id_l in lista_id_loterias:
+        if id_l in predicciones:
+            top1 = predicciones[id_l][0]
+            if not any(x['Número'] == top1['numero'] for x in seleccion_oro) and len(seleccion_oro) < 5:
+                seleccion_oro.append({
+                    'Puesto': len(seleccion_oro) + 1,
+                    'Número': top1['numero'],
+                    'Animalito': top1['animalito'],
+                    'Motivo de Selección': f"Rango #1 (ID {id_l})",
+                    'Probabilidad': top1['probabilidad']
                 })
 
-    if not resultados: return pd.DataFrame() # Caso borde si nada sumó
+    # REGLA 3: El Sweet Spot (Posición #3)
+    for id_l in lista_id_loterias:
+        if id_l in predicciones and len(predicciones[id_l]) >= 3:
+            sweet = predicciones[id_l][2]
+            if not any(x['Número'] == sweet['numero'] for x in seleccion_oro) and len(seleccion_oro) < 5:
+                seleccion_oro.append({
+                    'Puesto': len(seleccion_oro) + 1,
+                    'Número': sweet['numero'],
+                    'Animalito': sweet['animalito'],
+                    'Motivo de Selección': f"Posición 3 Estratégica (ID {id_l})",
+                    'Probabilidad': sweet['probabilidad']
+                })
 
-    df_resultados = pd.DataFrame(resultados)
-    df_resultados['penalidad_count'] = df_resultados['id_clase'].map(global_penalties)
-    df_resultados['probabilidad_ajustada'] = np.where(df_resultados['penalidad_count'] > 0, df_resultados['probabilidad_total_acumulada'] * 0.0001, df_resultados['probabilidad_total_acumulada'])
-    df_resultados['ES_DESCARTE'] = np.where(df_resultados['penalidad_count'] > 0, '❌ DESCARTADO', '✅ A JUGAR')
-    df_resultados = df_resultados.sort_values(by='probabilidad_ajustada', ascending=False)
+    # 3. Mostrar el reporte tal cual lo hacemos nosotros
+    df_oro = pd.DataFrame(seleccion_oro)
     
-    # --- SALIDA FINAL FORZADA A 5 ---
-    df_final = df_resultados.head(5).copy() 
+    print("\n" + "="*70)
+    print(f"🏆 Los 5 Animales a Jugar (Sorteo {hora_prediccion_str})")
+    print("="*70)
+    if not df_oro.empty:
+        print(df_oro[['Puesto', 'Número', 'Animalito', 'Motivo de Selección', 'Probabilidad']].to_string(index=False))
     
-    if len(lista_id_loterias) > 0:
-        df_final['probabilidad_media'] = (df_final['probabilidad_total_acumulada'] / len(lista_id_loterias) * 100).round(2).astype(str) + '%'
-    else:
-        df_final['probabilidad_media'] = '0%'
+    print("\n📋 Análisis de la Estrategia")
+    print("-" * 30)
+    for _, fila in df_oro.head(3).iterrows():
+        print(f"• {fila['Animalito']} ({fila['Número']}): Seleccionado por {fila['Motivo de Selección']}.")
+    
+    print("\n💰 Estrategia de Inversión Sugerida")
+    print("• Apuesta Fuerte (40%): Puestos 1 y 2.")
+    print("• Apuesta Media (40%): Puestos 3 y 4.")
+    print("• Apuesta de Cobertura (20%): Puesto 5.")
+    print("="*70 + "\n")
 
-    print("\n=========================================================================")
-    print(f"🥇 TRIPLETA GLOBAL CONSOLIDADA (TOP 5 LOCAL) para las {hora_prediccion_str} 🥇")
-    print(f"Acumulada de {len(lista_id_loterias)} loterías. Total de hits TOP 5: {conteo_predicciones}.")
-    print("=========================================================================")
-    print("\n⚠️ NOTA: Los animales con ❌ DESCARTADO son posiciones 2 o 4 en sus respectivas loterías.")
-    print(df_final[['numero', 'animalito', 'probabilidad_media', 'ES_DESCARTE']].to_string(index=False))
-
-    return df_final
+    return df_oro
 # -------------------------------------------------------------
 # 🟪 CLASE PRINCIPAL DE LA APLICACIÓN GUI
 # -------------------------------------------------------------
-
 
 
 
@@ -2104,622 +1993,212 @@ class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Sistema de Análisis de Loterías")
-        self.geometry("1000x800")
+        # --- Configuración de Ventana ---
+        self.title("Sistema de Análisis de Loterías - AI Pro")
+        self.geometry("1100x850")
+        customtkinter.set_appearance_mode("dark")
+        customtkinter.set_default_color_theme("blue")
 
+        # --- Configuración de Grid ---
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=3) 
-        self.grid_rowconfigure(10, weight=7) 
+        self.grid_rowconfigure(1, weight=1)
 
+        # --- Variables de Lógica Originales ---
         self.modelo_prediccion = None
-        self.animalitos_mapa = {} 
-        self.load_initial_data() 
+        self.animalitos_mapa = {}
+        self.global_tab_name = "Resumen Global"
         
-        # ==========================================================
-        # 1. FRAME SUPERIOR (RECOLECCIÓN DE DATOS) - FILA 0
-        # ==========================================================
-        self.top_frame = customtkinter.CTkFrame(self)
-        self.top_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        self.top_frame.grid_columnconfigure((0, 1, 2), weight=1) 
+        # Cargar datos desde DB
+        self.load_initial_data()
+        self.create_interface()
+
+    def load_initial_data(self):
+        """Carga el mapa de animalitos y opciones desde la DB al iniciar"""
+        # (Aquí invocas tus funciones externas: obtener_conexion_db, etc.)
+        try:
+            conexion = obtener_conexion_db()
+            if conexion:
+                self.animalitos_mapa = obtener_mapa_animalitos()
+                self.opciones_loterias_display, self.opciones_horas = obtener_opciones_combobox_db(conexion)
+                conexion.close()
+                print("✅ Datos iniciales cargados de la base de datos.")
+            else:
+                self.opciones_loterias_display = ["1 - Error DB"]
+                self.opciones_horas = ["00:00:00"]
+                print("❌ No se pudo conectar a la base de datos.")
+        except Exception as e:
+            print(f"Error en carga inicial: {e}")
+
+    def create_interface(self):
+        # 1. Barra Superior (Scrapers)
+        self.top_nav = customtkinter.CTkFrame(self, height=70, fg_color="#1a1a1a")
+        self.top_nav.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew")
         
         self.run_daily_button = customtkinter.CTkButton(
-            self.top_frame,
-            text="Ejecutar Scraper Diario",
-            command=self.run_daily_scraper_in_thread
+            self.top_nav, text="🔄 Scraper Diario", command=self.run_daily_scraper_in_thread
         )
-        self.run_daily_button.grid(row=0, column=0, padx=5, pady=10, sticky="ew")
-        
-        self.historical_frame = customtkinter.CTkFrame(self.top_frame, fg_color="transparent")
-        self.historical_frame.grid(row=0, column=1, columnspan=2, padx=5, pady=10, sticky="ew")
-        self.historical_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-        self.days_label = customtkinter.CTkLabel(self.historical_frame, text="Días a recolectar:")
-        self.days_label.grid(row=0, column=0, padx=(0,5))
-        
-        self.days_entry = customtkinter.CTkEntry(self.historical_frame, placeholder_text="Ej: 30")
-        self.days_entry.grid(row=0, column=1, padx=(0,5), sticky="ew")
+        self.run_daily_button.pack(side="left", padx=15, pady=15)
 
         self.run_historical_button = customtkinter.CTkButton(
-            self.historical_frame,
-            text="Recolectar Datos Históricos",
-            command=self.run_historical_scraper_in_thread
+            self.top_nav, text="📅 Historial", command=self.run_historical_scraper_in_thread
         )
-        self.run_historical_button.grid(row=0, column=2, padx=5, sticky="ew")
-        
-        # ==========================================================
-        # 2. LOG DE OPERACIONES - FILA 1 y 2
-        # ==========================================================
-        self.output_label = customtkinter.CTkLabel(self, text="Log de Operaciones:")
-        self.output_label.grid(row=1, column=0, padx=10, pady=(0,5), sticky="w") 
+        self.run_historical_button.pack(side="right", padx=15)
 
-        self.text_output = scrolledtext.ScrolledText(
-            self,
-            wrap=tk.WORD,
-            width=80,
-            height=15,
-            bg="#2B2B2B",
-            fg="#FFFFFF",
-            insertbackground="#FFFFFF"
-        )
-        self.text_output.grid(row=2, column=0, padx=10, pady=(0,10), sticky="nsew") 
-        
-        
-        # ==========================================================
-        # 3. CONTROLES DE PREDICCIÓN - FILAS 3, 4, 5, 6, 7, 8
-        # ==========================================================
+        self.days_entry = customtkinter.CTkEntry(self.top_nav, width=60)
+        self.days_entry.pack(side="right", padx=5)
+        self.days_entry.insert(0, "30")
+        customtkinter.CTkLabel(self.top_nav, text="Días:").pack(side="right", padx=2)
 
-        # === 3.1 Carga de Opciones REALES desde la Base de Datos ===
-        # Asume que obtener_conexion_db y obtener_opciones_combobox_db están definidas
-        conexion_db = obtener_conexion_db()
-        if conexion_db:
-            self.opciones_loterias_display, self.opciones_horas = obtener_opciones_combobox_db(conexion_db)
-            conexion_db.close()
-            if not self.opciones_loterias_display or not self.opciones_horas:
-                print("Advertencia: La DB está vacía o faltan datos. Usando valores de ejemplo.")
-                self.opciones_loterias_display = ["1 - Lotto Activo (VACÍO)", "2 - Granjita (VACÍO)"]
-                self.opciones_horas = ["13:00:00", "19:00:00"]
-        else:
-            print("Error: No se pudo conectar a la DB. Usando valores de ejemplo.")
-            self.opciones_loterias_display = ["1 - Lotto Activo (ERROR DB)", "2 - Granjita (ERROR DB)"]
-            self.opciones_horas = ["13:00:00", "19:00:00"]
-
-        # === 3.2 CREACIÓN DEL FRAME CONTENEDOR - FILA 3 ===
-        self.prediction_frame = customtkinter.CTkFrame(self, fg_color="transparent")
-        self.prediction_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
-        self.prediction_frame.grid_columnconfigure((0, 1), weight=1)
+        # 2. Pestañas Principales
+        self.tabview_main = customtkinter.CTkTabview(self, segmented_button_selected_color="#00FFFF")
+        self.tabview_main.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
         
-        # === 3.3 WIDGETS DE CONTROL (Dentro del self.prediction_frame) ===
-        
-        # Selección de Lotería (Usado para la predicción individual)
-        self.loteria_label = customtkinter.CTkLabel(self.prediction_frame, text="Lotería (Individual):")
-        self.loteria_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        self.loteria_combobox = customtkinter.CTkComboBox(self.prediction_frame, values=self.opciones_loterias_display) 
-        self.loteria_combobox.set(self.opciones_loterias_display[0] if self.opciones_loterias_display else "")
-        self.loteria_combobox.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        self.tab_pred = self.tabview_main.add("🎯 PREDICCIÓN")
+        self.tab_analisis_detallado = self.tabview_main.add("📊 ANÁLISIS DE PATRONES")
+        self.tab_log = self.tabview_main.add("💻 LOG DEL SISTEMA")
 
-        # Selección de Hora (Usado para todas las predicciones por tiempo)
-        self.hora_label = customtkinter.CTkLabel(self.prediction_frame, text="Hora Sorteo (Todas):")
-        self.hora_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.hora_combobox = customtkinter.CTkComboBox(self.prediction_frame, values=self.opciones_horas)
-        self.hora_combobox.set(self.opciones_horas[0] if self.opciones_horas else "")
-        self.hora_combobox.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-
-        # Botón de Predicción Individual - FILA 4
-        self.predict_button = customtkinter.CTkButton(self, text="🔮 Predecir Animalito Ganador", command=self.predict_animalito_button_command)
-        self.predict_button.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
+        # --- Configurar Pestañas ---
+        self.setup_prediction_tab()
         
-        # NUEVO BOTÓN: PREDICCIÓN DE TRIPLETAS DIARIAS - FILA 5
-        self.predict_tripletas_button = customtkinter.CTkButton(
-            self, 
-            text="🃏 Predecir Tripletas Diarias (TOP 5)", 
-            command=self.predict_tripletas_button_command
-        )
-        self.predict_tripletas_button.grid(row=5, column=0, padx=10, pady=(0, 10), sticky="ew")
-        
-        # 🆕 NUEVO BOTÓN: TRIPLETA GLOBAL CONSOLIDADA - FILA 6 🆕
-        self.predict_global_tripletas_button = customtkinter.CTkButton(
-            self, 
-            text="🌟 Tripleta Global Consolidada (TOP 3 por Hora)", 
-            command=self.predict_global_tripletas_button_command
-        )
-        self.predict_global_tripletas_button.grid(row=6, column=0, padx=10, pady=(0, 20), sticky="ew")
-        
-        # Etiqueta de Resultado - FILA 7
-        self.resultado_prediccion_label = customtkinter.CTkLabel(self, text="Predicción: En espera...", font=customtkinter.CTkFont(size=18, weight="bold"))
-        self.resultado_prediccion_label.grid(row=7, column=0, padx=10, pady=(0, 10), sticky="ew") 
-
-        # Botón para Entrenar el Modelo - FILA 8
-        self.entrenar_button = customtkinter.CTkButton(
-            self, 
-            text="⚙️ Entrenar Modelo (XGBoost)", 
-            command=self.entrenar_modelo_thread
-        )
-        self.entrenar_button.grid(row=8, column=0, padx=10, pady=10, sticky="ew") 
-
-        # ==========================================================
-        # 4. TABS DE ANÁLISIS - FILA 9 y 10
-        # ==========================================================
-        self.analysis_label = customtkinter.CTkLabel(self, text="Resultados del Análisis:")
-        self.analysis_label.grid(row=9, column=0, padx=10, pady=(10,5), sticky="w") 
-        
-        self.analysis_tabview = customtkinter.CTkTabview(self)
-        self.analysis_tabview.grid(row=10, column=0, padx=10, pady=(0,10), sticky="nsew") 
-
-        self.global_tab_name = "Resumen Global"
+        # Pestaña Análisis (Sub-pestañas dinámicas)
+        self.analysis_tabview = customtkinter.CTkTabview(self.tab_analisis_detallado)
+        self.analysis_tabview.pack(fill="both", expand=True, padx=5, pady=5)
         self.analysis_tabview.add(self.global_tab_name)
+        self.global_results_text = scrolledtext.ScrolledText(self.analysis_tabview.tab(self.global_tab_name), bg="#1a1a1a", fg="#FFFFFF", font=("Consolas", 11))
+        self.global_results_text.pack(fill="both", expand=True)
+
+        # --- DISEÑO DEL LOG SEGMENTADO (La parte que querías mejorar) ---
+        self.tab_log.grid_columnconfigure(0, weight=0) # Panel de selección
+        self.tab_log.grid_columnconfigure(1, weight=1) # Visor de datos
+        self.tab_log.grid_rowconfigure(0, weight=1)
+
+        self.log_filter_panel = customtkinter.CTkFrame(self.tab_log, width=200, fg_color="#141414")
+        self.log_filter_panel.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         
-        self.global_results_text = scrolledtext.ScrolledText(
-            self.analysis_tabview.tab(self.global_tab_name),
-            wrap=tk.WORD,
-            bg="#2B2B2B",
-            fg="#FFFFFF",
-            insertbackground="#FFFFFF"
-        )
-        self.global_results_text.pack(fill="both", expand=True, padx=5, pady=5)
-    
-    # --- MÉTODOS EXISTENTES (omitiendo la implementación para brevedad) ---
-    
+        customtkinter.CTkLabel(self.log_filter_panel, text="SEGMENTACIÓN", font=("Roboto", 14, "bold"), text_color="#00FFFF").pack(pady=10)
+        
+        # Selectores para facilitar la lectura
+        customtkinter.CTkLabel(self.log_filter_panel, text="Lotería:").pack(pady=(10,0))
+        self.log_lotto_select = customtkinter.CTkComboBox(self.log_filter_panel, values=["TODAS", "LOTTO ACTIVO", "LA GRANJITA"], width=160)
+        self.log_lotto_select.pack(pady=5)
+        
+        customtkinter.CTkLabel(self.log_filter_panel, text="Categoría:").pack(pady=(10,0))
+        self.log_cat_select = customtkinter.CTkComboBox(self.log_filter_panel, values=["General", "Horarios", "Patrones"], width=160)
+        self.log_cat_select.pack(pady=5)
+
+        self.clear_log_btn = customtkinter.CTkButton(self.log_filter_panel, text="Limpiar Log", fg_color="#333", command=lambda: self.text_output.delete("1.0", tk.END))
+        self.clear_log_btn.pack(side="bottom", pady=20)
+
+        # Visor de Texto principal (El Log)
+        self.text_output = scrolledtext.ScrolledText(self.tab_log, bg="#000000", fg="#00FF41", font=("Consolas", 10), borderwidth=0)
+        self.text_output.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+
+    def setup_prediction_tab(self):
+        self.tab_pred.grid_columnconfigure((0, 1), weight=1)
+        ctrl_frame = customtkinter.CTkFrame(self.tab_pred, fg_color="transparent")
+        ctrl_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+
+        self.loteria_combobox = customtkinter.CTkComboBox(ctrl_frame, values=self.opciones_loterias_display, width=280)
+        self.loteria_combobox.pack(pady=10)
+        self.hora_combobox = customtkinter.CTkComboBox(ctrl_frame, values=self.opciones_horas, width=280)
+        self.hora_combobox.pack(pady=10)
+
+        self.predict_button = customtkinter.CTkButton(ctrl_frame, text="🔮 PREDECIR GANADOR", command=self.predict_animalito_button_command)
+        self.predict_button.pack(pady=10, fill="x")
+        self.predict_tripletas_button = customtkinter.CTkButton(ctrl_frame, text="🃏 TRIPLETAS (TOP 5)", command=self.predict_tripletas_button_command)
+        self.predict_tripletas_button.pack(pady=10, fill="x")
+        self.predict_global_tripletas_button = customtkinter.CTkButton(ctrl_frame, text="🌟 TRIPLETA GLOBAL CONSOLIDADA", command=self.predict_global_tripletas_button_command, fg_color="#008B8B")
+        self.predict_global_tripletas_button.pack(pady=10, fill="x")
+        self.entrenar_button = customtkinter.CTkButton(ctrl_frame, text="⚙️ ENTRENAR MODELO XGBOOST", command=self.entrenar_modelo_thread, fg_color="#333333")
+        self.entrenar_button.pack(pady=(30, 0), fill="x")
+
+        res_frame = customtkinter.CTkFrame(self.tab_pred, fg_color="#1e1e1e", corner_radius=15)
+        res_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.resultado_prediccion_label = customtkinter.CTkLabel(res_frame, text="Esperando...", font=("Roboto", 24, "bold"), text_color="#00FFFF")
+        self.resultado_prediccion_label.pack(expand=True)
+
+    # --- LÓGICA DE PROCESAMIENTO E HILOS (Tu código original intacto) ---
     def run_daily_scraper_in_thread(self):
-        print("Ejecutando scraper diario...")
+        self.run_daily_button.configure(state="disabled", text="Ejecutando...")
+        self.clear_all_tabs()
+        self.tabview_main.set("📊 ANÁLISIS DE PATRONES")
+        threading.Thread(target=self._execute_scraper_and_analysis_task).start()
 
-    def run_historical_scraper_in_thread(self):
-        print("Ejecutando scraper histórico...")
+    def _execute_scraper_and_analysis_task(self):
+        try:
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            sys.stdout = TextRedirector(self.text_output)
+            sys.stderr = TextRedirector(self.text_output, "stderr")
+            all_analysis_results = ejecutar_scraper(self.text_output)
+            self.after(0, lambda: self.display_analysis_results(all_analysis_results))
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            sys.stdout, sys.stderr = original_stdout, original_stderr
+            self.after(0, lambda: self.run_daily_button.configure(state="normal", text="🔄 Scraper Diario"))
+
+    def display_analysis_results(self, all_results):
+        self.global_results_text.configure(state='normal')
+        self.global_results_text.delete("1.0", tk.END)
+        if not all_results:
+            self.global_results_text.insert(tk.END, "No hay resultados.\n")
+            return
+
+        self.global_results_text.insert(tk.END, "### ANÁLISIS GLOBAL ###\n\n")
+        saltos = all_results.get('Saltos Matutinos', {}).get('saltos_encontrados', [])
+        for s in saltos:
+            self.global_results_text.insert(tk.END, f"🚩 SALTO: {s['animal']} ({s['numero']}) en {s['destino_loteria']}\n")
         
-    def load_initial_data(self):
-        # Asume que obtener_conexion_db y obtener_mapa_animalitos están definidas
-        conexion = obtener_conexion_db()
-        if conexion:
-            self.animalitos_mapa = obtener_mapa_animalitos()
-            conexion.close()
-            if self.animalitos_mapa:
-                print("✅ Mapa de animalitos cargado desde la DB.")
-            else:
-                print("⚠️ Advertencia: No se pudo cargar el mapa de animalitos.")
-        else:
-            print("❌ No se pudo establecer la conexión a la DB para cargar el mapa de animalitos.")
-            
-    def entrenar_modelo_thread(self):
-        """Ejecuta el entrenamiento en un hilo."""
-        def run_training():
-            # Asume que obtener_conexion_db y entrenar_modelo_loterias están definidas
-            conexion = obtener_conexion_db() 
-            if conexion:
-                self.modelo_prediccion = entrenar_modelo_loterias()
-                conexion.close()
-                if self.modelo_prediccion:
-                    print("\n🎉 ¡ENTRENAMIENTO COMPLETADO! El modelo está listo para predecir.")
-                else:
-                    print("\n❌ El entrenamiento falló. Revise los datos y la DB.")
+        for loteria, data in all_results.items():
+            if loteria in ['Saltos Matutinos', 'Patrones Interloterias', 'Predicciones']: continue
+            self.analysis_tabview.add(loteria)
+            tab_txt = scrolledtext.ScrolledText(self.analysis_tabview.tab(loteria), bg="#2B2B2B", fg="#FFFFFF")
+            tab_txt.pack(fill="both", expand=True)
+            tab_txt.insert(tk.END, f"--- {loteria} ---\n\n")
+            if 'tendencias' in data:
+                for item in data['tendencias'].get('top_n_animales_mas_frecuentes', []):
+                    color_star = "⭐ " if str(item['numero']) == "5" else ""
+                    tab_txt.insert(tk.END, f"{color_star}Animal: {item['animalito']} | Frecuencia: {item['frecuencia']}\n")
+        self.global_results_text.configure(state='disabled')
 
+    def entrenar_modelo_thread(self):
+        def run_training():
+            print("⏳ Entrenando modelo XGBoost...")
+            self.modelo_prediccion = entrenar_modelo_loterias()
+            if self.modelo_prediccion:
+                print("🎉 ¡Modelo entrenado y listo!")
         threading.Thread(target=run_training).start()
 
     def predict_animalito_button_command(self):
-        """Inicia la predicción de animalito individual en un hilo separado."""
-        self.predict_button.configure(state="disabled", text="Prediciendo...")
-        self.resultado_prediccion_label.configure(text="Predicción: Calculando...", text_color="orange")
-
-        try:
-            seleccion_loteria = self.loteria_combobox.get()
-            id_loteria = int(seleccion_loteria.split(' ')[0]) 
-            hora_sorteo_str = self.hora_combobox.get()
-        except ValueError:
-            print("❌ Error: Seleccione un ID de Lotería y Hora válidos.")
-            self.predict_button.configure(state="normal", text="🔮 Predecir Animalito Ganador")
-            return
-            
-        hilo_prediccion = threading.Thread(target=self.run_prediction, args=(id_loteria, hora_sorteo_str))
-        hilo_prediccion.start()
-
-    def run_prediction(self, id_loteria, hora_sorteo_str):
-        """Función ejecutada por el hilo para correr la lógica de predicción individual."""
-        # Asume que predecir_animalito_ganador está definida
-        resultado = None 
-
-        try:
-            resultado = predecir_animalito_ganador(id_loteria, hora_sorteo_str, top_n=5)
-            
-            if resultado is not None and not resultado.empty:
-                nombre_animalito = resultado['animalito'].iloc[0]
-                numero_ganador = resultado['numero'].iloc[0] 
-                self.resultado_prediccion_label.configure(
-                    text=f"Predicción: ¡{nombre_animalito} ({numero_ganador})!", 
-                    text_color="yellow"
-                )
-            else:
-                self.resultado_prediccion_label.configure(text="Predicción: Fallida 😥", text_color="red")
-            
-        except Exception as e:
-            print(f"❌ Error en la predicción individual: {e}")
-            self.resultado_prediccion_label.configure(text="Predicción: Error interno 😥", text_color="red")
-            
-        finally:
-            self.predict_button.configure(state="normal", text="🔮 Predecir Animalito Ganador")
+        loteria = self.loteria_combobox.get()
+        id_loteria = int(loteria.split(' ')[0])
+        hora = self.hora_combobox.get()
+        self.resultado_prediccion_label.configure(text="Calculando...", text_color="orange")
+        def task():
+            res = predecir_animalito_ganador(id_loteria, hora, top_n=5)
+            if res is not None and not res.empty:
+                nombre = res['animalito'].iloc[0]
+                num = res['numero'].iloc[0]
+                self.after(0, lambda: self.resultado_prediccion_label.configure(text=f"¡{nombre} ({num})!", text_color="#00FFFF"))
+        threading.Thread(target=task).start()
 
     def predict_tripletas_button_command(self):
-        """Comando que se ejecuta al presionar el botón de Tripletas Diarias."""
-        self.predict_tripletas_button.configure(state="disabled", text="Generando Tripletas...")
-        print("\n--- INICIANDO PREDICCIÓN DE TRIPLETAS DIARIAS ---")
+        id_loterias = [int(s.split(' ')[0]) for s in self.opciones_loterias_display]
+        threading.Thread(target=lambda: generar_reporte_tripletas_combinadas(id_loterias)).start()
 
-        try:
-            # Obtiene todos los IDs de las loterías disponibles en el combobox
-            id_loterias = [int(s.split(' ')[0]) for s in self.opciones_loterias_display]
-        except ValueError:
-            print("❌ Error: No se pudieron parsear los IDs de lotería.")
-            self.predict_tripletas_button.configure(state="normal", text="🃏 Predecir Tripletas Diarias (TOP 5)")
-            return
-            
-        # Asume que generar_reporte_tripletas_combinadas está definida
-        hilo_tripletas = threading.Thread(target=self.run_tripletas_prediction, args=(id_loterias,))
-        hilo_tripletas.start()
-
-    def run_tripletas_prediction(self, id_loterias):
-        """Función ejecutada por el hilo para correr la lógica de generación de Tripletas Diarias."""
-        try:
-            reporte = generar_reporte_tripletas_combinadas(id_loterias)
-            
-            if reporte:
-                print("\n✅ Reporte de Tripletas TOP 5 generado correctamente. Vea el Log para los detalles.")
-            else:
-                print("\n⚠️ Advertencia: El reporte de Tripletas se generó vacío.")
-            
-        except Exception as e:
-            print(f"\n❌ Fallo crítico al generar el reporte de tripletas: {e}")
-            
-        finally:
-            self.predict_tripletas_button.configure(state="normal", text="🃏 Predecir Tripletas Diarias (TOP 5)")
-            print("--- FINALIZADO EL PROCESO DE TRIPLETAS DIARIAS ---")
-
-
-    # ------------------------------------------------------------------
-    # 🆕 NUEVOS MÉTODOS PARA TRIPLETA GLOBAL CONSOLIDADA
-    # ------------------------------------------------------------------
-    
     def predict_global_tripletas_button_command(self):
-        """Comando que se ejecuta al presionar el botón de Tripleta Global."""
-        self.predict_global_tripletas_button.configure(state="disabled", text="Generando Tripleta Global...")
-        print("\n--- INICIANDO TRIPLETA GLOBAL CONSOLIDADA ---")
-
-        try:
-            # 1. Obtiene los IDs de todas las loterías
-            id_loterias = [int(s.split(' ')[0]) for s in self.opciones_loterias_display]
-            # 2. Obtiene la hora seleccionada
-            hora_sorteo_str = self.hora_combobox.get()
-        except ValueError:
-            print("❌ Error: No se pudieron obtener los IDs de lotería o la hora.")
-            self.predict_global_tripletas_button.configure(state="normal", text="🌟 Tripleta Global Consolidada (TOP 3 por Hora)")
-            return
-            
-        # 3. Inicia la predicción en un hilo
-        hilo_global = threading.Thread(target=self.run_global_tripletas_prediction, args=(id_loterias, hora_sorteo_str))
-        hilo_global.start()
-
-    def run_global_tripletas_prediction(self, id_loterias, hora_sorteo_str):
-        """Función ejecutada por el hilo para correr la lógica de la Tripleta Global."""
-        try:
-            # Asume que generar_tripleta_consolidada_global está definida
-            df_global = generar_tripleta_consolidada_global(id_loterias, hora_sorteo_str, top_n=3)
-            
-            if df_global is not None and not df_global.empty:
-                # 4. Actualiza la etiqueta de resultado principal con el TOP 1 Global
-                top_animalito = df_global['animalito'].iloc[0]
-                top_numero = df_global['numero'].iloc[0]
-                self.resultado_prediccion_label.configure(
-                    text=f"PREDICCIÓN GLOBAL: {top_animalito} ({top_numero})", 
-                    text_color="#00FFFF" # Color Aqua para destacar la predicción global
-                )
-                print("\n✅ Tripleta Global generada correctamente. Vea el Log para los detalles.")
-            else:
-                self.resultado_prediccion_label.configure(text="Predicción: Fallida 😥", text_color="red")
-                print("\n⚠️ Advertencia: La Tripleta Global se generó vacía.")
-            
-        except Exception as e:
-            print(f"\n❌ Fallo crítico al generar la Tripleta Global: {e}")
-            
-        finally:
-            self.predict_global_tripletas_button.configure(state="normal", text="🌟 Tripleta Global Consolidada (TOP 3 por Hora)")
-            print("--- FINALIZADO EL PROCESO DE TRIPLETA GLOBAL ---")
-
-    def run_daily_scraper_in_thread(self):
-        self.run_daily_button.configure(state="disabled", text="Ejecutando...")
-        self.run_historical_button.configure(state="disabled")
-        self.days_entry.configure(state="disabled")
-        self.clear_all_tabs()
-        self.analysis_tabview.set(self.global_tab_name)
-        
-        scraper_thread = threading.Thread(target=self._execute_scraper_and_analysis_task)
-        scraper_thread.start()
+        id_loterias = [int(s.split(' ')[0]) for s in self.opciones_loterias_display]
+        hora = self.hora_combobox.get()
+        threading.Thread(target=lambda: generar_tripleta_consolidada_global(id_loterias, hora)).start()
 
     def run_historical_scraper_in_thread(self):
-        try:
-            dias_a_recolectar = int(self.days_entry.get())
-            if dias_a_recolectar <= 0:
-                self.text_output.insert(tk.END, "El número de días debe ser mayor que cero.\n")
-                return
-        except ValueError:
-            self.text_output.insert(tk.END, "Entrada inválida. Por favor, ingresa un número de días válido.\n")
-            return
-            
-        self.run_daily_button.configure(state="disabled")
-        self.run_historical_button.configure(state="disabled", text="Ejecutando...")
-        self.days_entry.configure(state="disabled")
-        self.clear_all_tabs()
-        self.analysis_tabview.set(self.global_tab_name)
-        
-        scraper_thread = threading.Thread(target=self._execute_historical_scraper_task, args=(dias_a_recolectar,))
-        scraper_thread.start()
-        
-    def _execute_scraper_and_analysis_task(self):
-        try:
-            # Redirige la salida de la consola a la caja de texto
-            original_stdout = sys.stdout
-            original_stderr = sys.stderr
-            sys.stdout = TextRedirector(self.text_output)
-            sys.stderr = TextRedirector(self.text_output, "stderr")
-            
-            # Ejecuta la función principal
-            all_analysis_results = ejecutar_scraper(self.text_output)
-
-            # Usa `after` para pasar los resultados al hilo principal de Tkinter
-            self.after(0, lambda: self.display_analysis_results(all_analysis_results))
-
-        except Exception as e:
-            print(f"Error en el hilo de análisis: {e}")
-            import traceback
-            traceback.print_exc(file=sys.stdout)
-        finally:
-            # Vuelve a redirigir la salida a la consola
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-            # Habilita los botones al finalizar, también en el hilo principal
-            self.after(0, lambda: self.run_daily_button.configure(state="normal", text="Ejecutar Scraper Diario"))
-            self.after(0, lambda: self.run_historical_button.configure(state="normal", text="Recolectar Datos Históricos"))
-            self.after(0, lambda: self.days_entry.configure(state="normal"))
-
-    def _execute_historical_scraper_task(self, dias_a_recolectar):
-        ejecutar_scraper_historico(self.text_output, dias_a_recolectar)
-        self.after(0, lambda: self._execute_scraper_and_analysis_task())
-        self.run_daily_button.configure(state="normal", text="Ejecutar Scraper Diario")
-        self.run_historical_button.configure(state="normal", text="Recolectar Datos Históricos")
-        self.days_entry.configure(state="normal")
-
+        dias = int(self.days_entry.get())
+        threading.Thread(target=lambda: ejecutar_scraper_historico(self.text_output, dias)).start()
 
     def clear_all_tabs(self):
-        tabs_to_delete = [
-            tab_name for tab_name in list(self.analysis_tabview._tab_dict.keys()) 
-            if tab_name != self.global_tab_name
-        ]
-        
-        for tab_name in tabs_to_delete:
-            self.analysis_tabview.delete(tab_name)
-        
-        self.global_results_text.delete("1.0", tk.END)
-
-    def display_analysis_results(self, all_results):
-        # --- PARTE 1: MOSTRAR RESULTADOS GLOBALES (EN EL WIDGET PRINCIPAL) ---
-        self.global_results_text.configure(state='normal')
-        self.global_results_text.delete("1.0", tk.END)
-        
-        if not all_results:
-            self.global_results_text.insert(tk.END, "No se obtuvieron resultados de análisis.\n")
-            self.global_results_text.configure(state='disabled')
-            return
-
-        self.global_results_text.insert(tk.END, "### Análisis de Saltos Matutinos (Global) ###\n\n")
-        saltos_data = all_results.get('Saltos Matutinos', {}).get('saltos_encontrados', [])
-        if saltos_data:
-            for salto in saltos_data:
-                self.global_results_text.insert(tk.END, f"  ¡Salto detectado! {salto['animal']} ({salto['numero']})\n")
-                self.global_results_text.insert(tk.END, f"    Origen: {salto['origen_loteria_manana']} a las {salto['origen_hora_manana']}\n")
-                self.global_results_text.insert(tk.END, f"    Destino: {salto['destino_loteria']} a las {salto['destino_hora']}\n")
-                self.global_results_text.insert(tk.END, "\n")
-        else:
-            self.global_results_text.insert(tk.END, "  No se detectaron saltos matutinos para el día.\n")
-
-        self.global_results_text.insert(tk.END, "\n" + "="*80)
-        self.global_results_text.insert(tk.END, "\n### Análisis de Patrones Interloterías (Global) ###\n\n")
-        patrones_interloterias_data = all_results.get('Patrones Interloterias', {}).get('patrones_interloterias', [])
-        if patrones_interloterias_data:
-            for patron, conteo in patrones_interloterias_data:
-                animales_base = ', '.join(patron[:-1])
-                animal_repeticion = patron[-1]
-                self.global_results_text.insert(tk.END, f"  - Patrón: {animales_base} -> Repetición de {animal_repeticion} ({conteo} veces)\n")
-        else:
-            self.global_results_text.insert(tk.END, "  No se encontraron patrones de repetición significativos en los últimos 30 días.\n")
-        self.global_results_text.insert(tk.END, "\n")
-        
-        self.global_results_text.insert(tk.END, "="*80 + "\n\n")
-        self.global_results_text.insert(tk.END, "### PREDICCIONES DEL DÍA ###\n\n")
-        predicciones = all_results.get('Predicciones', [])
-        if predicciones:
-            for i, p in enumerate(predicciones[:5], 1):
-                self.global_results_text.insert(tk.END, f"  {i}. {p['animal']} ({p['numero']}) - Probabilidad: {p['score']:.2f}\n")
-                for razon in set(p['razones']):
-                    self.global_results_text.insert(tk.END, f"    - Razón: {razon}\n")
-                self.global_results_text.insert(tk.END, "\n")
-        else:
-            self.global_results_text.insert(tk.END, "  No se pudieron generar predicciones con los datos actuales.\n")
-        
-        self.global_results_text.see(tk.END)
-        self.global_results_text.configure(state='disabled')
-
-        # --- PARTE 2: CREAR Y POBLAR LAS PESTAÑAS DE ANÁLISIS INDIVIDUALES ---
-        
-        # Limpiar las pestañas existentes (excepto la global) antes de crearlas de nuevo
         for tab in list(self.analysis_tabview._tab_dict.keys()):
-            if tab != self.global_tab_name:
-                self.analysis_tabview.delete(tab)
-
-        for loteria, data in all_results.items():
-            # Excluir los análisis globales para que no tengan su propia pestaña
-            if loteria in ['Saltos Matutinos', 'Patrones Interloterias', 'Predicciones']:
-                continue
-            
-            # Agregar la pestaña si no existe
-            self.analysis_tabview.add(loteria)
-            
-            # Obtener o crear el widget de texto para la pestaña
-            lottery_output_text = scrolledtext.ScrolledText(
-                self.analysis_tabview.tab(loteria),
-                wrap=tk.WORD,
-                bg="#2B2B2B",
-                fg="#FFFFFF",
-                insertbackground="#FFFFFF"
-            )
-            lottery_output_text.pack(fill="both", expand=True, padx=5, pady=5)
-            
-            lottery_output_text.insert(tk.END, f"--- Resumen de Análisis para {loteria} ---\n\n")
-
-            # ----------------------------------------------------------------------
-            # AHORA AÑADIMOS TODO EL CONTENIDO PARA CADA PESTAÑA INDIVIDUAL
-            # ----------------------------------------------------------------------
-
-            # Tendencias de Posibles Resultados
-            lottery_output_text.insert(tk.END, "Tendencias de Posibles Resultados:\n")
-            if data.get('tendencias') and data['tendencias'].get('top_n_animales_mas_frecuentes'):
-                for item in data['tendencias']['top_n_animales_mas_frecuentes']:
-                    lottery_output_text.insert(tk.END, f"  - {item['animalito']} ({item['numero']}): {item['frecuencia']} veces (Última vez: {item['ultima_vez']})\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de tendencias.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Frecuencia por Horario
-            lottery_output_text.insert(tk.END, "Frecuencia por Horario:\n")
-            if data.get('frecuencia_horario'):
-                for hora, animales in data['frecuencia_horario'].items():
-                    lottery_output_text.insert(tk.END, f"  Horario {hora}:\n")
-                    for animal_data in animales:
-                        lottery_output_text.insert(tk.END, f"    - {animal_data['animalito']} ({animal_data['numero']}): {animal_data['frecuencia']} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de frecuencia por horario.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Análisis de Rachas
-            lottery_output_text.insert(tk.END, "Análisis de Rachas:\n")
-            lottery_output_text.insert(tk.END, "  Animales Fríos (Top 5):\n")
-            if data.get('rachas') and data['rachas'].get('animales_frios'):
-                for item in data['rachas']['animales_frios'][:5]:
-                    if item.get('ultima_vez'):
-                        lottery_output_text.insert(tk.END, f"    - {item['animalito']} ({item['numero']}): Última vez hace {item['dias_sin_salir']} días.\n")
-                    else:
-                        lottery_output_text.insert(tk.END, f"    - {item['animalito']} ({item['numero']}): No ha salido en el período analizado.\n")
-            else:
-                lottery_output_text.insert(tk.END, "    No hay datos de animales fríos.\n")
-            lottery_output_text.insert(tk.END, "  Animales en Racha Caliente:\n")
-            if data.get('rachas') and data['rachas'].get('animales_en_racha'):
-                for animal_data in data['rachas']['animales_en_racha']:
-                    animal = animal_data['animalito']
-                    count = animal_data['conteo']
-                    numero = animal_data['numero']
-                    lottery_output_text.insert(tk.END, f"    - {animal} ({numero}): Salió {count} veces recientemente.\n")
-            else:
-                lottery_output_text.insert(tk.END, "    No hay animales en racha caliente.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Patrones Secuenciales
-            lottery_output_text.insert(tk.END, "Patrones Secuenciales:\n")
-            if data.get('patrones') and data['patrones'].get('patrones_frecuentes'):
-                for patron, count in data['patrones']['patrones_frecuentes']:
-                    lottery_output_text.insert(tk.END, f"  - {' -> '.join(patron)}: {count} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No se encontraron patrones secuenciales significativos.\n")
-            lottery_output_text.insert(tk.END, "\n")
-            
-            # Frecuencia por Día de la Semana
-            lottery_output_text.insert(tk.END, "Frecuencia por Día de la Semana:\n")
-            if data.get('frecuencia_dia_semana'):
-                for dia_nombre, animales in data['frecuencia_dia_semana'].items():
-                    lottery_output_text.insert(tk.END, f"  Día {dia_nombre}:\n")
-                    for animal_data in animales:
-                        lottery_output_text.insert(tk.END, f"    - {animal_data['animalito']}: {animal_data['frecuencia']} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de frecuencia por día de la semana.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Terminaciones
-            lottery_output_text.insert(tk.END, "Análisis de Terminaciones:\n")
-            if data.get('terminaciones') and data['terminaciones'].get('terminaciones_frecuentes'):
-                for term, freq in data['terminaciones']['terminaciones_frecuentes']:
-                    lottery_output_text.insert(tk.END, f"  - Terminación '{term}': {freq} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de terminaciones.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Grupos
-            lottery_output_text.insert(tk.END, "Análisis de Grupos:\n")
-            if data.get('grupos') and data['grupos'].get('grupos_frecuentes'):
-                for grupo, freq in data['grupos']['grupos_frecuentes']:
-                    lottery_output_text.insert(tk.END, f"  - Grupo {grupo}: {freq} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de grupos.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Ciclo de Salida
-            lottery_output_text.insert(tk.END, "Análisis de Ciclo de Salida:\n")
-            if data.get('ciclo_salida') and data['ciclo_salida'].get('animales_fuera_de_ciclo'):
-                lottery_output_text.insert(tk.END, "  Animales fuera del ciclo promedio:\n")
-                for animal_data in data['ciclo_salida']['animales_fuera_de_ciclo']:
-                    animal, info = animal_data
-                    lottery_output_text.insert(tk.END, f"    - {animal}: {info['diferencia_dias']} días por encima del promedio ({info['promedio_dias']:.2f})\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No se encontraron animales fuera del ciclo de salida.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Patrones Profundos
-            lottery_output_text.insert(tk.END, "Patrones Secuenciales Profundos:\n")
-            if data.get('patrones_profundos') and data['patrones_profundos'].get('patrones_frecuentes_profundo'):
-                for patron, count in data['patrones_profundos']['patrones_frecuentes_profundo']:
-                    lottery_output_text.insert(tk.END, f"  - {' -> '.join(patron)}: {count} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No se encontraron patrones profundos.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Paridad
-            lottery_output_text.insert(tk.END, "Análisis de Paridad:\n")
-            if data.get('paridad'):
-                par_info = data['paridad'].get('par', {})
-                impar_info = data['paridad'].get('impar', {})
-                lottery_output_text.insert(tk.END, f"  - Números Pares: {par_info.get('conteo', 0)} veces ({par_info.get('porcentaje', '0.00%')})\n")
-                lottery_output_text.insert(tk.END, f"  - Números Impares: {impar_info.get('conteo', 0)} veces ({impar_info.get('porcentaje', '0.00%')})\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de paridad.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Correlación
-            lottery_output_text.insert(tk.END, "Análisis de Correlación:\n")
-            if data.get('correlacion') and data['correlacion'].get('pares_correlacionados'):
-                for (animal1, animal2), conteo in data['correlacion']['pares_correlacionados']:
-                    lottery_output_text.insert(tk.END, f"  - {animal1} -> {animal2}: {conteo} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de correlación.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Decenas
-            lottery_output_text.insert(tk.END, "Análisis de Decenas Frecuentes:\n")
-            if data.get('decenas') and data['decenas'].get('decenas_frecuentes'):
-                for decena, conteo in data['decenas']['decenas_frecuentes']:
-                    lottery_output_text.insert(tk.END, f"  - Decena {decena}-{decena+9}: {conteo} veces\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos de decenas frecuentes.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            # Modelo Predictivo por Hora
-            lottery_output_text.insert(tk.END, "Modelo Predictivo por Hora:\n")
-            if data.get('modelo_hora') and data['modelo_hora'].get('predicciones'):
-                hora_actual = datetime.now().strftime('%I:%M %p')
-                predicciones_actuales = data['modelo_hora']['predicciones'].get(hora_actual, [])
-                if predicciones_actuales:
-                    lottery_output_text.insert(tk.END, f"  Predicciones para las {hora_actual}:\n")
-                    for animal_predicho, conteo in predicciones_actuales:
-                        lottery_output_text.insert(tk.END, f"    - {animal_predicho}: {conteo} veces\n")
-                else:
-                    lottery_output_text.insert(tk.END, "  No hay predicciones para la hora actual.\n")
-            else:
-                lottery_output_text.insert(tk.END, "  No hay datos del modelo por hora.\n")
-            lottery_output_text.insert(tk.END, "\n")
-
-            lottery_output_text.configure(state='disabled')
-            lottery_output_text.see(tk.END)
-
+            if tab != self.global_tab_name: self.analysis_tabview.delete(tab)
+        self.global_results_text.delete("1.0", tk.END)
 
 
 
@@ -2733,7 +2212,7 @@ CONFIG_DB = {
 }
 
 # --- Configuración de Selenium ---
-RUTA_CHROMEDRIVER = 'C:\\Users\\monster\\Desktop\\chromedriver-win64\\chromedriver.exe'
+RUTA_CHROMEDRIVER = 'C:\\Users\\monster\\Downloads\\chromedriver-win64\\chromedriver.exe'
 
 # Horarios permitidos para cada lotería
 LOTERIAS_PERMITIDAS_HORARIOS = {
@@ -2880,6 +2359,7 @@ def obtener_id_loteria(conexion, nombre_loteria):
     finally:
         if cursor:
             cursor.close()
+
 def obtener_ultimo_resultado_por_loteria(conexion, nombre_loteria):
     """
     Obtiene el animalito ganador del último sorteo registrado para una lotería específica.
@@ -2916,7 +2396,7 @@ def obtener_ultimo_resultado_por_loteria(conexion, nombre_loteria):
 def insertar_resultado_sorteo(conexion, fecha, hora, id_loteria, id_animalito, numero_animalito, nombre_animalito):
     cursor = None
     try:
-        cursor = conexion.cursor()
+        cursor = conexion.cursor(dictionary=True, buffered=True)
         consulta_verificacion = """
         SELECT id_sorteo FROM sorteos
         WHERE fecha = %s AND hora = %s AND id_loteria = %s
@@ -3058,7 +2538,7 @@ def parsear_resultados_lotoven(contenido_html, fecha_esperada=None):
 
 
 
-def buscar_patrones_secuenciales(conexion, id_loteria, longitud_patron=2, dias_atras=730, top_n_patrones=5):
+def buscar_patrones_secuenciales(conexion, id_loteria, longitud_patron=2, dias_atras=1000, top_n_patrones=5):
     print(f"\nBuscando patrones secuenciales (longitud {longitud_patron}) para Lotería ID {id_loteria} (últimos {dias_atras} días)...")
     
     resultados_historicos_raw = []
@@ -3226,7 +2706,7 @@ def obtener_resultados_anteriores(conexion, id_loteria, dias_atras=730):
         if cursor:
             cursor.close()
 
-def analizar_posibles_resultados(conexion, id_loteria, dias_analisis=730, top_n=5):
+def analizar_posibles_resultados(conexion, id_loteria, dias_analisis=1000, top_n=5):
     print(f"\nAnalizando posibles resultados para Lotería ID {id_loteria} (últimos {dias_analisis} días)...")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
     if not resultados_historicos:
@@ -3313,7 +2793,7 @@ def analizar_posibles_resultados(conexion, id_loteria, dias_analisis=730, top_n=
     }
 
 
-def analizar_frecuencia_por_horario(conexion, id_loteria, dias_analisis=730, top_n_horarios=3, top_n_animales_por_horario=3):
+def analizar_frecuencia_por_horario(conexion, id_loteria, dias_analisis=1000, top_n_horarios=5, top_n_animales_por_horario=20):
     print(f"\nAnalizando frecuencia y ciclo de repetición por horario para Lotería ID {id_loteria} (últimos {dias_analisis} días)...")
     
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
@@ -3400,7 +2880,7 @@ def analizar_frecuencia_por_horario(conexion, id_loteria, dias_analisis=730, top
     
     return analisis_detallado
 
-def analizar_frecuencia_por_horario_interloterias(conexion, dias_analisis=730, top_n_animales_por_horario=3):
+def analizar_frecuencia_por_horario_interloterias(conexion, dias_analisis=1000, top_n_animales_por_horario=10):
     """
     Analiza la frecuencia y el ciclo de repetición de los animalitos por horario,
     agrupando los resultados de todas las loterías.
@@ -3493,7 +2973,7 @@ def analizar_frecuencia_por_horario_interloterias(conexion, dias_analisis=730, t
     
     return analisis_detallado
 
-def analizar_rachas_animalitos(conexion, id_loteria, dias_analisis=730):
+def analizar_rachas_animalitos(conexion, id_loteria, dias_analisis=1000):
     print(f"\nAnalizando rachas para Lotería ID {id_loteria}...")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
     
@@ -3574,7 +3054,7 @@ def analizar_rachas_animalitos(conexion, id_loteria, dias_analisis=730):
 
     return {'animales_en_racha': animales_en_racha, 'animales_frios': animales_frios}
 
-def analizar_patrones_secuenciales(conexion, id_loteria, dias_analisis=730, min_frecuencia=2):
+def analizar_patrones_secuenciales(conexion, id_loteria, dias_analisis=1000, min_frecuencia=3):
     print(f"\nAnalizando patrones secuenciales para Lotería ID {id_loteria}...")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3653,7 +3133,7 @@ def obtener_ultimo_resultado_global(conexion):
         return None
 
 
-def analizar_frecuencia_por_dia_semana(conexion, id_loteria, dias_analisis=730, top_n_dias=3, top_n_animales=3):
+def analizar_frecuencia_por_dia_semana(conexion, id_loteria, dias_analisis=1000, top_n_dias=3, top_n_animales=5):
     print(f"\n--- Analizando frecuencia por día de la semana para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3688,7 +3168,7 @@ def analizar_frecuencia_por_dia_semana(conexion, id_loteria, dias_analisis=730, 
     
     print("Análisis de frecuencia por día de la semana completado.")
     return analisis_detallado
-def analizar_frecuencia_global_por_dia_semana(conexion, dias_analisis=730):
+def analizar_frecuencia_global_por_dia_semana(conexion, dias_analisis=1000):
     """
     Analiza la frecuencia de salida de cada animalito por día de la semana a nivel global.
     """
@@ -3730,14 +3210,14 @@ def analizar_frecuencia_global_por_dia_semana(conexion, dias_analisis=730):
         print("\nResultados del análisis global de frecuencia por día de la semana:")
         for dia, animales in frecuencia_por_dia.items():
             print(f"  - Día {dia}:")
-            for i, animal_data in enumerate(animales[:5]):  # Mostrar los top 5 de cada día
+            for i, animal_data in enumerate(animales[:10]):  # Mostrar los top 5 de cada día
                 print(f"    - {animal_data['animalito']}: {animal_data['frecuencia']} veces")
 
     return {'frecuencia_global_dia': frecuencia_por_dia}
 
 
 
-def analizar_terminaciones(conexion, id_loteria, dias_analisis=730, top_n=5):
+def analizar_terminaciones(conexion, id_loteria, dias_analisis=1000, top_n=5):
     print(f"\n--- Analizando frecuencia de terminaciones para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3760,7 +3240,7 @@ def analizar_terminaciones(conexion, id_loteria, dias_analisis=730, top_n=5):
     return {'terminaciones_frecuentes': top_terminaciones}
 
 
-def analizar_grupos(conexion, id_loteria, dias_analisis=730, top_n=3):
+def analizar_grupos(conexion, id_loteria, dias_analisis=1000, top_n=3):
     print(f"\n--- Analizando frecuencia de grupos para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
     
@@ -3784,7 +3264,7 @@ def analizar_grupos(conexion, id_loteria, dias_analisis=730, top_n=3):
         print(f"  - Grupo {grupo_id}: {freq} veces.")
     
     return {'grupos_frecuentes': top_grupos}
-def analizar_ciclo_salida(conexion, id_loteria, dias_analisis=730, top_n=5):
+def analizar_ciclo_salida(conexion, id_loteria, dias_analisis=1000, top_n=5):
     print(f"\n--- Analizando ciclo de salida para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3825,7 +3305,7 @@ def analizar_ciclo_salida(conexion, id_loteria, dias_analisis=730, top_n=5):
     
     print("Análisis de ciclo de salida completado.")
     return {'animales_fuera_de_ciclo': animales_ordenados[:top_n]}
-def analizar_patrones_secuenciales_profundo(conexion, id_loteria, dias_analisis=730, longitud_patron=3, top_n=5):
+def analizar_patrones_secuenciales_profundo(conexion, id_loteria, dias_analisis=1000, longitud_patron=3, top_n=5):
     print(f"\n--- Analizando patrones secuenciales de longitud {longitud_patron} para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3849,7 +3329,7 @@ def analizar_patrones_secuenciales_profundo(conexion, id_loteria, dias_analisis=
         print(f"  - {' -> '.join(patron)}: {conteo} veces.")
     
     return {'patrones_frecuentes_profundo': top_patrones}
-def analizar_paridad_numeros(conexion, id_loteria, dias_analisis=730):
+def analizar_paridad_numeros(conexion, id_loteria, dias_analisis=1000):
     print(f"\n--- Analizando paridad de números para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3881,7 +3361,7 @@ def analizar_paridad_numeros(conexion, id_loteria, dias_analisis=730):
     
     print(f"Análisis de paridad: {analisis_paridad}")
     return analisis_paridad
-def analizar_correlacion_animalitos(conexion, id_loteria, dias_analisis=730, rango_sorteos=5, top_n=5):
+def analizar_correlacion_animalitos(conexion, id_loteria, dias_analisis=1000, rango_sorteos=1, top_n=10):
     print(f"\n--- Analizando correlación de animalitos para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3904,7 +3384,7 @@ def analizar_correlacion_animalitos(conexion, id_loteria, dias_analisis=730, ran
         print(f"  - {animal1} -> {animal2}: {conteo} veces.")
 
     return {'pares_correlacionados': top_correlaciones}
-def analizar_correlacion_interloterias(conexion, dias_analisis=730, rango_sorteos=5, top_n=5):
+def analizar_correlacion_interloterias(conexion, dias_analisis=1000, rango_sorteos=1, top_n=5):
     """
     Analiza la correlación secuencial entre animalitos en la secuencia unificada
     de todos los sorteos, sin importar la lotería.
@@ -3940,13 +3420,33 @@ def analizar_correlacion_interloterias(conexion, dias_analisis=730, rango_sorteo
     
     top_correlaciones = correlaciones.most_common(top_n)
     
-    print(f"Top {top_n} pares de animalitos correlacionados de forma secuencial (inter-loterías):")
+    print(f"Top {top_n} pares de animalitos correlacionados de forma secuencia (inter-loterías):")
     for (animal1, animal2), conteo in top_correlaciones:
         print(f"  - {animal1} -> {animal2}: {conteo} veces.")
 
+    # --- NUEVA LISTA DE ACTIVADORES MÚLTIPLES (AÑADIDO) ---
+    print("\n🚀 ANALIZANDO ANIMALES CON MÚLTIPLES ACTIVADORES FUERTES:")
+    
+    # Agrupamos activadores basándonos en tu Top 100 (mínimo 28 veces)
+    activadores_fuerza = {}
+    for (origen, destino), conteo in correlaciones.items():
+        if conteo >= 28: 
+            if destino not in activadores_fuerza:
+                activadores_fuerza[destino] = []
+            activadores_fuerza[destino].append(f"{origen} ({conteo})")
+
+    encontrados = 0
+    for animal, lista in activadores_fuerza.items():
+        if len(lista) >= 2: # Solo si tiene 2 o más activadores
+            encontrados += 1
+            print(f"  🔥 {animal.upper()} tiene {len(lista)} activadores: {', '.join(lista)}")
+
+    if encontrados == 0:
+        print("  ⚠️ No se detectaron animales con más de 2 activadores fuertes en este rango.")
+
     return {'pares_correlacionados_interloterias': top_correlaciones}
 
-def analizar_decenas_frecuentes(conexion, id_loteria, dias_analisis=730, top_n=3):
+def analizar_decenas_frecuentes(conexion, id_loteria, dias_analisis=1000, top_n=3):
     print(f"\n--- Analizando decenas frecuentes para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -3976,7 +3476,7 @@ def analizar_decenas_frecuentes(conexion, id_loteria, dias_analisis=730, top_n=3
         print(f"  - {decena}-{decena+9}: {conteo} veces.")
     
     return {'decenas_frecuentes': top_decenas}
-def modelo_predictivo_por_hora(conexion, id_loteria, dias_analisis=730, top_n=5):
+def modelo_predictivo_por_hora(conexion, id_loteria, dias_analisis=1000, top_n=5):
     print(f"\n--- Generando predicciones por hora para Lotería ID {id_loteria} ---")
     
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
@@ -4000,7 +3500,7 @@ def modelo_predictivo_por_hora(conexion, id_loteria, dias_analisis=730, top_n=5)
     
     print("Modelo predictivo por hora generado.")
     return {'predicciones': predicciones_por_hora}
-def analizar_patrones_interloterias(conexion, loterias_a_analizar=['Lotto Activo', 'Granjita', 'Selva Plus'], dias_analisis=730):
+def analizar_patrones_interloterias(conexion, loterias_a_analizar=['Lotto Activo', 'Granjita', 'Selva Plus'], dias_analisis=1000):
     print("\n--- Analizando patrones de resultados entre loterías ---")
     
     # 1. Obtener y agrupar todos los resultados por fecha y hora
@@ -4058,7 +3558,7 @@ def analizar_patrones_interloterias(conexion, loterias_a_analizar=['Lotto Activo
         print("  - No se encontraron patrones de repetición en el período analizado.")
 
     return {'patrones_interloterias': top_patrones}
-def analizar_horarios_de_repeticion(conexion, id_loteria, dias_analisis=730):
+def analizar_horarios_de_repeticion(conexion, id_loteria, dias_analisis=1000):
     print(f"\n--- Analizando horarios y probabilidades de repetición para Lotería ID {id_loteria} ---")
     resultados_historicos = obtener_resultados_anteriores(conexion, id_loteria, dias_atras=dias_analisis)
 
@@ -4117,7 +3617,7 @@ def analizar_horarios_de_repeticion(conexion, id_loteria, dias_analisis=730):
         'animal_mas_propenso_repetir': animal_mas_propenso_repetir
     }
 
-def analizar_patron_vecindad(conexion, dias_analisis=30):
+def analizar_patron_vecindad(conexion, dias_analisis=1000):
     print(f"\n--- Analizando patrón de vecindad de animalitos (últimos {dias_analisis} días) ---")
     
     fecha_fin = datetime.now().date()
@@ -4417,6 +3917,123 @@ def generar_predicciones(conexion, resultados_analisis):
 
     return predicciones
 
+def filtrar_jugada_maestra_hector(analisis_inter, frecuencia_horario, frecuencia_dia, ultimos_animalitos):
+    puntuacion_animales = {}
+    
+    # 1. Normalizar animales recientes (los que ya salieron)
+    ultimos_norm = [a.strip().lower() for a in ultimos_animalitos]
+    
+    # 2. Obtener hora actual en segundos para comparar con el horario de sorteos
+    ahora = datetime.now()
+    segundos_ahora = ahora.hour * 3600 + ahora.minute * 60
+    
+    # Mapeo de días para sincronizar Python con tu DB
+    dias_nombres = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
+    dia_hoy_nombre = dias_nombres[ahora.weekday()]
+
+    # --- PASO 1: CORRELACIONES (OPTIMIZADO PARA RANGO 3) ---
+    # Analiza no solo el último, sino los últimos 3 para ver qué "llamaron"
+    lista_pares = analisis_inter.get('pares_correlacionados_interloterias', [])
+    
+    # Invertimos para que el más reciente sea el primero en la lista de evaluación
+    recientes_ordenados = list(reversed(ultimos_norm)) 
+
+    for pos, anim_pasado in enumerate(recientes_ordenados[:3]): # Evaluamos máximo los últimos 3
+        # Peso de cercanía: El último vale 100%, el penúltimo 70%, el tras-penúltimo 40%
+        factor_cercania = 1.0 if pos == 0 else (0.7 if pos == 1 else 0.4)
+        
+        for (a1, a2), conteo in lista_pares:
+            if a1.lower() == anim_pasado:
+                hijo = a2.title()
+                # Puntos base por frecuencia de la correlación
+                puntos_base = 45 if conteo > 35 else 35
+                puntos_finales = puntos_base * factor_cercania
+                
+                if hijo not in puntuacion_animales:
+                    puntuacion_animales[hijo] = {
+                        'puntos': puntos_finales, 
+                        'razones': [f"Atraído por {a1.title()} ({int(factor_cercania*100)}% relevancia)"]
+                    }
+                else:
+                    # Si ya existía (doble o triple atracción), sumamos un refuerzo
+                    puntuacion_animales[hijo]['puntos'] += (puntos_finales * 0.6)
+                    puntuacion_animales[hijo]['razones'].append(f"Refuerzo por {a1.title()}")
+
+    # --- PASO 2: DÍA DE LA SEMANA ---
+    # Suma puntos si el animal es históricamente fuerte hoy
+    f_dia_dict = frecuencia_dia.get('frecuencia_global_dia', {})
+    animales_del_dia = f_dia_dict.get(dia_hoy_nombre, [])
+    for data_anim in animales_del_dia[:15]: # Top 15 del día
+        nombre = data_anim['animalito'].title()
+        if nombre in puntuacion_animales:
+            puntuacion_animales[nombre]['puntos'] += 25
+            puntuacion_animales[nombre]['razones'].append(f"Fuerte los {dia_hoy_nombre}")
+
+    # --- PASO 3: DEUDA POR HORARIO ---
+    # Suma puntos si el animal tiene "propensión" (deuda) en los sorteos que faltan hoy
+    for hora_obj, lista_anims in frecuencia_horario.items():
+        try:
+            # Normalización de formato de hora (timedelta o time)
+            if isinstance(hora_obj, timedelta):
+                segundos_sorteo = hora_obj.total_seconds()
+            elif isinstance(hora_obj, time):
+                segundos_sorteo = hora_obj.hour * 3600 + hora_obj.minute * 60
+            else:
+                continue
+            
+            # Solo evaluamos sorteos futuros para hoy
+            if segundos_sorteo >= segundos_ahora:
+                for anim_data in lista_anims:
+                    if anim_data.get('propenso_a_salir') == "Sí":
+                        n_deuda = anim_data['animalito'].title()
+                        if n_deuda in puntuacion_animales:
+                            # Aumentamos a 35 puntos para que la deuda desempate con fuerza
+                            puntuacion_animales[n_deuda]['puntos'] += 35
+                            puntuacion_animales[n_deuda]['razones'].append(f"Deuda para las {hora_obj}")
+        except:
+            continue
+
+    # --- PASO 4: FILTRO DE EXCLUSIÓN Y FORMATEO FINAL ---
+    resultado = []
+    for nombre, data in puntuacion_animales.items():
+        # EXCLUSIÓN CRÍTICA: Si ya salió en los últimos sorteos, no lo recomendamos
+        if nombre.lower() not in ultimos_norm:
+            resultado.append({
+                'animal': nombre,
+                'fuerza': min(98, int(data['puntos'])), # Capamos en 98% para realismo
+                'detalles': " + ".join(list(set(data['razones'])))
+            })
+    
+    # Ordenar de mayor a menor fuerza
+    return sorted(resultado, key=lambda x: x['fuerza'], reverse=True)
+    
+    
+def imprimir_recomendacion_maestra(analisis_resultados, resultados_recientes):
+    # 1. Extraer animales recién salidos del scraper
+    ultimos = [r['animalito'].title() for r in resultados_recientes][-4:]
+    
+    # 2. Obtener los bloques de datos con las CLAVES EXACTAS de tus funciones
+    inter = analisis_resultados.get('Correlacion Interloterias', {})
+    f_horario = analisis_resultados.get('Frecuencia Global por Horario', {})
+    f_dia = analisis_resultados.get('Frecuencia Global por Dia', {})
+
+    # 3. Calcular
+    jugada = filtrar_jugada_maestra_hector(inter, f_horario, f_dia, ultimos)
+
+    print("\n" + "═"*65)
+    print(" 🎯 PRONÓSTICO DE ALTA PRECISIÓN (SISTEMA HÉCTOR) 🎯 ")
+    print("═"*65)
+    
+    if not jugada:
+        print(" ⚠️ Analizando patrones... Intenta tras el próximo sorteo.")
+    else:
+        for i, res in enumerate(jugada[:3], 1):
+            print(f" {i}º OPCIÓN: {res['animal'].upper()} ({res['fuerza']}% de fuerza)")
+            print(f"    MOTIVO: {res['detalles']}")
+            print("-" * 40)
+    
+    print("═"*65 + "\n")
+
 
 
 def ejecutar_scraper(text_output_widget):
@@ -4478,25 +4095,25 @@ def ejecutar_scraper(text_output_widget):
             continue
         
         print(f"\n--- Análisis de tendencias para {nombre_loteria} ---")
-        analisis_resultados = analizar_posibles_resultados(conexion, id_loteria, dias_analisis=730, top_n=5)
+        analisis_resultados = analizar_posibles_resultados(conexion, id_loteria, dias_analisis=1000, top_n=5)
         
         print(f"\n--- Análisis de frecuencia por horario para {nombre_loteria} ---")
-        analisis_horario = analizar_frecuencia_por_horario(conexion, id_loteria, dias_analisis=730, top_n_horarios=5, top_n_animales_por_horario=3)
+        analisis_horario = analizar_frecuencia_por_horario(conexion, id_loteria, dias_analisis=1000, top_n_horarios=5, top_n_animales_por_horario=10)
 
         print(f"\n--- Análisis de Rachas para {nombre_loteria} ---")
-        analisis_rachas = analizar_rachas_animalitos(conexion, id_loteria=id_loteria, dias_analisis=730)
+        analisis_rachas = analizar_rachas_animalitos(conexion, id_loteria=id_loteria, dias_analisis=1000)
 
         print(f"\n--- Detección de Patrones Secuenciales para {nombre_loteria} ---")
-        patrones_encontrados = buscar_patrones_secuenciales(conexion, id_loteria, longitud_patron=2, dias_atras=730, top_n_patrones=5)
+        patrones_encontrados = buscar_patrones_secuenciales(conexion, id_loteria, longitud_patron=1, dias_atras=1000, top_n_patrones=30)
         
         print(f"\n--- Análisis de Frecuencia por Día de la Semana para {nombre_loteria} ---")
-        frecuencia_dia_semana = analizar_frecuencia_por_dia_semana(conexion, id_loteria, dias_analisis=730)
+        frecuencia_dia_semana = analizar_frecuencia_por_dia_semana(conexion, id_loteria, dias_analisis=1000)
         
         print(f"\n--- Análisis de Terminaciones para {nombre_loteria} ---")
-        analisis_terminaciones = analizar_terminaciones(conexion, id_loteria, dias_analisis=730)
+        analisis_terminaciones = analizar_terminaciones(conexion, id_loteria, dias_analisis=1000)
         
         print(f"\n--- Análisis de Grupos para {nombre_loteria} ---")
-        analisis_grupos = analizar_grupos(conexion, id_loteria, dias_analisis=730)
+        analisis_grupos = analizar_grupos(conexion, id_loteria, dias_analisis=1000)
         
         print(f"\n--- Análisis de Horarios de Repetición para {nombre_loteria} ---")
         horarios_repeticion = analizar_horarios_de_repeticion(conexion, id_loteria)
@@ -4554,18 +4171,18 @@ def ejecutar_scraper(text_output_widget):
         }
 
     # === Llamadas a las funciones de análisis globales ===
-    analisis_correlacion_interloterias = analizar_correlacion_interloterias(conexion, dias_analisis=730, rango_sorteos=5, top_n=5)
+    analisis_correlacion_interloterias = analizar_correlacion_interloterias(conexion, dias_analisis=1000, rango_sorteos=3, top_n=100)
     
     saltos_matutinos_global = analizar_saltos_matutinos(conexion, dias_analisis=1)
     
-    frecuencia_global_por_horario = analizar_frecuencia_por_horario_interloterias(conexion, dias_analisis=730)
+    frecuencia_global_por_horario = analizar_frecuencia_por_horario_interloterias(conexion, dias_analisis=1000)
     
     # AÑADE ESTA NUEVA FUNCIÓN AQUÍ
     frecuencia_global_por_dia = analizar_frecuencia_global_por_dia_semana(conexion)
     
     # NUEVO: Análisis de Patrón de Vecindad
     print("\n--- Análisis de Patrón de Vecindad ---")
-    analisis_patron_vecindad = analizar_patron_vecindad(conexion, dias_analisis=730)
+    analisis_patron_vecindad = analizar_patron_vecindad(conexion, dias_analisis=1000)
     
     # === Fin de llamadas ===
 
@@ -4577,6 +4194,9 @@ def ejecutar_scraper(text_output_widget):
     todos_los_analisis_resultados['Frecuencia Global por Dia'] = frecuencia_global_por_dia
     
     todos_los_analisis_resultados['Patron Vecindad'] = analisis_patron_vecindad
+    # === AQUÍ ES DONDE CONECTAMOS TODO ===
+    # Esta línea llama a la función que creamos para que pinte los resultados en pantalla
+    imprimir_recomendacion_maestra(todos_los_analisis_resultados, resultados_todos)
 
     predicciones_finales = generar_predicciones(conexion, todos_los_analisis_resultados)
     todos_los_analisis_resultados['Predicciones'] = predicciones_finales
@@ -4589,6 +4209,7 @@ def ejecutar_scraper(text_output_widget):
     sys.stderr = original_stderr
     
     return todos_los_analisis_resultados
+
 
 def ejecutar_scraper_historico(text_output_widget, dias_a_recolectar):
     """
